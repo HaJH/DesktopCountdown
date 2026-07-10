@@ -20,18 +20,29 @@ pub fn rgb_to_hex(rgb: [u8; 3]) -> String {
 pub fn anchor_to_cell(a: Anchor) -> (usize, usize) {
     use Anchor::*;
     match a {
-        TopLeft => (0, 0), TopCenter => (0, 1), TopRight => (0, 2),
-        MiddleLeft => (1, 0), Center => (1, 1), MiddleRight => (1, 2),
-        BottomLeft => (2, 0), BottomCenter => (2, 1), BottomRight => (2, 2),
+        TopLeft => (0, 0),
+        TopCenter => (0, 1),
+        TopRight => (0, 2),
+        MiddleLeft => (1, 0),
+        Center => (1, 1),
+        MiddleRight => (1, 2),
+        BottomLeft => (2, 0),
+        BottomCenter => (2, 1),
+        BottomRight => (2, 2),
     }
 }
 
 pub fn cell_to_anchor(row: usize, col: usize) -> Anchor {
     use Anchor::*;
     match (row, col) {
-        (0, 0) => TopLeft, (0, 1) => TopCenter, (0, 2) => TopRight,
-        (1, 0) => MiddleLeft, (1, 2) => MiddleRight,
-        (2, 0) => BottomLeft, (2, 1) => BottomCenter, (2, 2) => BottomRight,
+        (0, 0) => TopLeft,
+        (0, 1) => TopCenter,
+        (0, 2) => TopRight,
+        (1, 0) => MiddleLeft,
+        (1, 2) => MiddleRight,
+        (2, 0) => BottomLeft,
+        (2, 1) => BottomCenter,
+        (2, 2) => BottomRight,
         _ => Center, // (1,1) and any out-of-range
     }
 }
@@ -72,8 +83,17 @@ mod tests {
     #[test]
     fn anchor_grid_round_trips_all_nine() {
         use Anchor::*;
-        for a in [TopLeft, TopCenter, TopRight, MiddleLeft, Center, MiddleRight,
-                  BottomLeft, BottomCenter, BottomRight] {
+        for a in [
+            TopLeft,
+            TopCenter,
+            TopRight,
+            MiddleLeft,
+            Center,
+            MiddleRight,
+            BottomLeft,
+            BottomCenter,
+            BottomRight,
+        ] {
             let (r, c) = anchor_to_cell(a);
             assert!(r < 3 && c < 3);
             assert_eq!(cell_to_anchor(r, c), a);
@@ -92,8 +112,8 @@ mod tests {
     #[test]
     fn should_save_only_after_debounce_and_when_dirty() {
         assert!(!should_save(false, 9999, 500)); // not dirty
-        assert!(!should_save(true, 100, 500));    // dirty but too soon
-        assert!(should_save(true, 500, 500));     // dirty and settled (boundary)
-        assert!(should_save(true, 700, 500));     // dirty and settled
+        assert!(!should_save(true, 100, 500)); // dirty but too soon
+        assert!(should_save(true, 500, 500)); // dirty and settled (boundary)
+        assert!(should_save(true, 700, 500)); // dirty and settled
     }
 }
