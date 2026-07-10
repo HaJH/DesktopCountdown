@@ -19,6 +19,8 @@
 - 크레이트 버전: `windows = "0.62"`, `jiff = "0.2"`, `serde = "1"`, `toml = "1"`, `notify = "8"`, `tray-icon = "0.24"`, `tracing = "0.1"`, `tracing-appender = "0.2"`, `thiserror = "2"`, `anyhow = "1"`.
 - **`windows` 0.62의 정확한 함수 시그니처(특히 `Option<HWND>` 래핑, `Result` 반환 여부)는 버전마다 다르다. 이 문서의 Win32 코드는 로직 기준이며, 컴파일 에러가 나면 컴파일러가 요구하는 형태를 따른다.** 로직을 바꾸지 않는 한 시그니처 조정은 계획 이탈이 아니다.
 - 텍스트 안티에일리어싱은 항상 `D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE`. ClearType은 레이어드 창에서 알파를 망가뜨린다.
+- 테스트는 `cargo test`의 기본 병렬 실행에서 통과해야 한다. `--test-threads=1` 같은 플래그를 요구하지 않는다. 프로세스 전역 상태(레지스트리 등)를 건드리는 테스트는 `static Mutex`로 직렬화한다.
+- 작업 브랜치는 `feat/renderer`. 각 태스크는 이 브랜치에 커밋한다.
 - 코드와 코드 주석은 영어. 커밋 메시지와 문서는 한국어.
 - 커밋 메시지에 자동 생성 문구(`Co-Authored-By`, `Generated with` 등)를 넣지 않는다. 제목 한 줄 + 필요하면 불릿 몇 개로 충분하다.
 - 각 태스크는 커밋으로 끝난다.
@@ -2276,8 +2278,12 @@ unsafe fn copy_out(bitmap: &IWICBitmap, width: u32, height: u32) -> Result<Vec<u
 
 - [ ] **Step 5: 테스트 통과 확인**
 
-Run: `cargo test render -- --test-threads=1`
-Expected: 8개 PASS. (`--test-threads=1`은 COM 아파트먼트 초기화가 스레드마다 반복되는 것을 피하기 위해서다.)
+Run: `cargo test render`
+Expected: 8개 PASS.
+
+테스트는 병렬로 돈다. `Renderer::new()`가 호출 스레드에서 `CoInitializeEx`를 부르므로 각 테스트
+스레드가 자기 COM 아파트먼트를 갖고, 만들어진 COM 객체는 스레드를 넘나들지 않는다. 따라서 별도
+플래그가 필요 없다.
 
 `alpha_is_premultiplied`가 실패하면 `SetTextAntialiasMode`가 GRAYSCALE로 설정되지 않은 것이다.
 `tabular_figures_keep_the_width_constant_across_digits`가 Consolas에서 실패하면 이미 고정폭이라 `tnum`이 무의미한 경우이므로, 실패할 리가 없다 — 실패하면 `letter_spacing_em` 적용이 문자열 길이에 따라 달라지는지 확인한다.
@@ -2362,7 +2368,7 @@ git commit -m "renderer: fill 모드 텍스트 렌더링
 
 - [ ] **Step 2: 테스트가 실패하는지 확인**
 
-Run: `cargo test render -- --test-threads=1`
+Run: `cargo test render`
 Expected: `outline_mode_draws_less_ink_than_fill` FAIL — outline 모드가 아무것도 그리지 않아 `coverage` 가 0이다.
 
 - [ ] **Step 3: 커스텀 텍스트 렌더러 구현**
@@ -2556,7 +2562,7 @@ pub(crate) fn collect_geometry(
 
 - [ ] **Step 5: 테스트 통과 확인**
 
-Run: `cargo test render -- --test-threads=1`
+Run: `cargo test render`
 Expected: 11개 PASS.
 
 `outline_mode_leaves_glyph_centres_transparent`가 실패하면 `stroke_layout`이 아니라 `FillGeometry`를 부르고 있거나, `DrawMode::Outline`에서도 `DrawTextLayout`이 호출되고 있는 것이다.
@@ -2799,15 +2805,26 @@ Expected: `a_null_handle_is_not_alive` PASS, 나머지 1개 ignored.
 Run: `cargo test wallpaper_window -- --ignored`
 Expected: `acquires_workerw_and_reports_it_alive` PASS.
 
-- [ ] **Step 5: 커밋**
+- [ ] **Step 5: 스파이크 바이너리 삭제**
+
+`src/bin/spike_layered.rs`를 지운다. 스파이크는 역할을 다했고, WorkerW 탐색 로직이 이 모듈로
+옮겨졌으므로 그대로 두면 같은 로직이 두 곳에 존재하게 된다. 검증 결과는
+`docs/superpowers/plans/spike-result.md`와 Task 1 커밋에 남아 있으므로 잃는 것이 없다.
+
+Run: `rm src/bin/spike_layered.rs && cargo build`
+Expected: 성공. `cargo build`가 더 이상 `spike_layered` 바이너리를 만들지 않는다.
+
+- [ ] **Step 6: 커밋**
 
 ```bash
+git rm src/bin/spike_layered.rs
 git add src/wallpaper_window.rs src/lib.rs
 git commit -m "wallpaper_window: WorkerW 확보와 레이어드 자식 창
 
 - 스크린 좌표를 부모 클라이언트 좌표로 변환해 배치
 - UpdateLayeredWindow로 프리멀티플라이드 BGRA 업로드
-- opacity는 BLENDFUNCTION의 SourceConstantAlpha로 적용"
+- opacity는 BLENDFUNCTION의 SourceConstantAlpha로 적용
+- 역할을 다한 스파이크 바이너리 제거"
 ```
 
 ---
@@ -3771,13 +3788,22 @@ git commit -m "복원력: WorkerW 지수 백오프와 렌더러 재생성
 
 `src/autostart.rs` 하단에. `HKCU`에 쓰므로 관리자 권한이 필요 없다. 테스트는 원래 값을 복원한다.
 
+두 테스트가 같은 레지스트리 값을 읽고 쓴다. `cargo test`는 테스트를 병렬로 돌리므로, 뮤텍스로
+직렬화하지 않으면 서로를 깨뜨린다. **`--test-threads=1`에 의존하지 않는다** — 그런 테스트는
+누군가 평범하게 `cargo test`를 돌리는 순간 간헐적으로 실패한다.
+
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Both tests mutate the same registry value; serialise them.
+    static REGISTRY: Mutex<()> = Mutex::new(());
 
     #[test]
     fn enable_then_disable_round_trips() {
+        let _lock = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
         let original = is_enabled().unwrap();
 
         set_enabled(true).unwrap();
@@ -3792,22 +3818,26 @@ mod tests {
 
     #[test]
     fn disabling_when_absent_is_not_an_error() {
+        let _lock = REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
         let original = is_enabled().unwrap();
+
         set_enabled(false).unwrap();
         assert!(set_enabled(false).is_ok());
+
         set_enabled(original).unwrap();
     }
 }
 ```
 
+`unwrap_or_else(|e| e.into_inner())`는 앞선 테스트가 패닉해 뮤텍스가 poison 되어도 나머지 테스트가
+실행되게 한다.
+
 - [ ] **Step 2: 테스트가 실패하는지 확인**
 
 `src/lib.rs`에 `pub mod autostart;` 추가 후,
 
-Run: `cargo test autostart -- --test-threads=1`
+Run: `cargo test autostart`
 Expected: 컴파일 실패. `cannot find function 'is_enabled'`.
-
-`--test-threads=1`이 필수다. 두 테스트가 같은 레지스트리 값을 건드린다.
 
 - [ ] **Step 3: 구현 작성**
 
@@ -3873,7 +3903,7 @@ pub fn set_enabled(on: bool) -> Result<()> {
 
 - [ ] **Step 5: 테스트와 수동 확인**
 
-Run: `cargo test autostart -- --test-threads=1`
+Run: `cargo test autostart`
 Expected: 2개 PASS.
 
 `config.toml`에 `[general]\nautostart = true`를 넣고 `cargo run` 후, `regedit`에서 `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`에 `DesktopCountdown` 값이 생겼는지 확인한다. `false`로 바꾸면 사라진다.
@@ -3972,7 +4002,7 @@ cargo build --release
 
 - [ ] **Step 4: 전체 테스트 재확인**
 
-Run: `cargo test -- --test-threads=1`
+Run: `cargo test`
 Expected: 전부 PASS (ignored 1개 제외).
 
 Run: `cargo test -- --ignored`
@@ -3992,7 +4022,7 @@ git commit -m "릴리스 프로파일과 README"
 
 ## 완료 조건
 
-- `cargo test -- --test-threads=1`이 전부 통과한다.
+- `cargo test`가 전부 통과한다 (병렬 실행. 특별한 플래그를 요구하는 테스트가 없어야 한다).
 - `cargo clippy --all-targets -- -D warnings`가 깨끗하다.
 - 릴리스 실행 파일이 콘솔 없이 뜨고, 4개 모니터에 카운트다운이 그려진다.
 - `config.toml`을 저장하면 1초 안에 반영되고, 깨진 설정은 화면을 건드리지 않는다.
