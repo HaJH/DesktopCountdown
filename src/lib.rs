@@ -7,6 +7,7 @@ pub mod color;
 pub mod config;
 pub mod countdown;
 pub mod dcomp;
+pub mod fonts;
 pub mod layout;
 pub mod logging;
 pub mod monitors;
