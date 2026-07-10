@@ -26,6 +26,11 @@ use crate::workerw::{self, ChildWindow};
 const CTRL_CLASS: PCWSTR = w!("DesktopCountdownController");
 const TIMER_ID: usize = 1;
 const MIN_TIMER_MS: u32 = 20;
+/// Slow fallback poll cadence once the WorkerW retry budget is exhausted. Keeps
+/// `tick()` from calling `workerw::acquire()` (and re-logging the give-up error)
+/// on every ~1 Hz tick forever; a WorkerW can still reappear later (e.g. Explorer
+/// restarts), so we keep checking, just rarely.
+const GIVE_UP_POLL_MS: u64 = 30_000;
 
 /// Milliseconds until the next whole second, clamped so the timer never fires
 /// immediately (which would spin) nor sleeps past a tick.
@@ -54,6 +59,10 @@ pub struct App {
     workerw_backoff: Backoff,
     /// `None` means "retry now"; `Some(at)` means "wait out the backoff until `at`".
     retry_at: Option<std::time::Instant>,
+    /// Set once the retry budget is spent and we drop to the slow `GIVE_UP_POLL_MS`
+    /// cadence; cleared on a successful re-acquire. Gates the give-up `error!` so it
+    /// fires once per outage instead of once per slow poll.
+    workerw_gave_up: bool,
     tray: Tray,
 }
 
@@ -85,6 +94,7 @@ impl App {
             last_lines: None,
             workerw_backoff: Backoff::new(500, 8_000, 60_000),
             retry_at: None,
+            workerw_gave_up: false,
             tray: Tray::new()?,
         };
         tracing::info!("tray icon created");
@@ -195,6 +205,7 @@ impl App {
                     self.workerw = hwnd;
                     self.workerw_backoff.reset();
                     self.retry_at = None;
+                    self.workerw_gave_up = false;
                     self.rebuild_panels()?;
                     let _ = self.tray.set_warning(false);
                 }
@@ -208,7 +219,22 @@ impl App {
                             Ok(())
                         }
                         None => {
-                            tracing::error!("giving up on WorkerW after the retry budget: {e:#}");
+                            // Retry budget spent: drop to a slow, bounded poll cadence
+                            // instead of hammering `acquire()` every tick forever. Log
+                            // the give-up only on the false->true transition so the
+                            // (non-rotating) log file does not grow one line per poll.
+                            if !self.workerw_gave_up {
+                                tracing::error!(
+                                    "giving up on WorkerW after the retry budget: {e:#}"
+                                );
+                                self.workerw_gave_up = true;
+                            } else {
+                                tracing::debug!("still no WorkerW ({e:#}), polling slowly");
+                            }
+                            self.retry_at = Some(
+                                std::time::Instant::now()
+                                    + std::time::Duration::from_millis(GIVE_UP_POLL_MS),
+                            );
                             Ok(()) // keep the tray alive so the user can quit
                         }
                     };
