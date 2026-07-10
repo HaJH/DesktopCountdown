@@ -15,9 +15,11 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumWindows, FindWindowExW, FindWindowW,
-    GetMessageW, RegisterClassW, SendMessageTimeoutW, SetWindowPos, TranslateMessage,
-    UpdateLayeredWindow, HWND_TOP, MSG, SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOZORDER, ULW_ALPHA,
-    WNDCLASSW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT, WS_VISIBLE,
+    GetClassNameW, GetMessageW, GetWindow, RegisterClassW, SendMessageTimeoutW, SetParent,
+    SetWindowLongPtrW, SetWindowPos, TranslateMessage, UpdateLayeredWindow, GWL_STYLE, GW_CHILD,
+    GW_HWNDNEXT, HWND_TOP, MSG, SMTO_NORMAL, SWP_FRAMECHANGED, SWP_NOACTIVATE, ULW_ALPHA,
+    WNDCLASSW, WS_CHILD, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    WS_POPUP, WS_VISIBLE,
 };
 
 const W: i32 = 600;
@@ -32,10 +34,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
 
 fn main() -> Result<()> {
     unsafe {
-        let workerw = acquire_workerw()?;
-        println!("WorkerW = {:?}", workerw);
+        let (workerw, strategy) = acquire_workerw()?;
+        println!("WorkerW = {:?} (found via: {strategy})", workerw.0);
 
         let hinst = GetModuleHandleW(None)?;
+        println!("hinst ok = {:?}", hinst.0);
+
         let class = w!("SpikeLayeredChild");
         let wc = WNDCLASSW {
             lpfnWndProc: Some(wndproc),
@@ -43,22 +47,33 @@ fn main() -> Result<()> {
             lpszClassName: class,
             ..Default::default()
         };
-        RegisterClassW(&wc);
+        let atom = RegisterClassW(&wc);
+        println!("RegisterClassW atom = {atom}");
 
+        // CreateWindowEx cannot take a parent owned by another process (explorer.exe here);
+        // it returns NULL with GetLastError() == 0. Every working example (Lively, Wallpaper
+        // Engine) creates a top-level window first, then reparents it with SetParent.
         let hwnd = CreateWindowExW(
-            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE,
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
             class,
             PCWSTR::null(),
-            WS_CHILD | WS_VISIBLE,
+            WS_POPUP,
             0,
             0,
             W,
             H,
-            Some(workerw),
+            None,
             None,
             Some(hinst.into()),
             None,
         )?;
+        println!("created top-level {:?}", hwnd.0);
+
+        let old_parent = SetParent(hwnd, Some(workerw))?;
+        println!("SetParent -> previous parent {:?}", old_parent.0);
+
+        // SetParent does not adjust the style; a reparented window must be WS_CHILD.
+        SetWindowLongPtrW(hwnd, GWL_STYLE, (WS_CHILD.0 | WS_VISIBLE.0) as isize);
 
         // Child coordinates are relative to the parent's client area.
         let (sx, sy) = screen_origin_from_args();
@@ -66,9 +81,18 @@ fn main() -> Result<()> {
         let mut origin = POINT { x: sx, y: sy };
         windows::Win32::Graphics::Gdi::ScreenToClient(workerw, &mut origin).ok()?;
         println!("client origin = ({}, {})", origin.x, origin.y);
-        SetWindowPos(hwnd, Some(HWND_TOP), origin.x, origin.y, W, H, SWP_NOACTIVATE | SWP_NOZORDER)?;
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOP),
+            origin.x,
+            origin.y,
+            W,
+            H,
+            SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        )?;
 
         push_gradient(hwnd)?;
+        report_z_order(workerw, hwnd);
 
         let mut msg = MSG::default();
         while GetMessageW(&mut msg, None, 0, 0).as_bool() {
@@ -76,6 +100,24 @@ fn main() -> Result<()> {
             DispatchMessageW(&msg);
         }
         Ok(())
+    }
+}
+
+/// Prints where our window landed in the parent's z-order. Index 0 is topmost.
+/// If another process (e.g. Wallpaper Engine) owns siblings above us, we are invisible
+/// and that is what this tells us — without it, a blank desktop has two explanations.
+unsafe fn report_z_order(parent: HWND, ours: HWND) {
+    println!("z-order of {:?}'s children (topmost first):", parent.0);
+    let mut h = GetWindow(parent, GW_CHILD).ok();
+    let mut i = 0;
+    while let Some(cur) = h {
+        let mut buf = [0u16; 128];
+        let n = GetClassNameW(cur, &mut buf);
+        let class = String::from_utf16_lossy(&buf[..n.max(0) as usize]);
+        let marker = if cur == ours { "  <== OURS" } else { "" };
+        println!("  [z{i}] {:?} {class}{marker}", cur.0);
+        h = GetWindow(cur, GW_HWNDNEXT).ok();
+        i += 1;
     }
 }
 
@@ -166,17 +208,44 @@ unsafe fn push_gradient(hwnd: HWND) -> Result<()> {
     Ok(())
 }
 
-unsafe fn acquire_workerw() -> Result<HWND> {
+/// Finds the window Explorer paints the wallpaper into.
+///
+/// Two arrangements exist in the wild:
+///
+/// * "classic": `SHELLDLL_DefView` lives inside a top-level `WorkerW`, and the wallpaper
+///   `WorkerW` is the next top-level sibling after it.
+/// * "child of Progman": `SHELLDLL_DefView` stays inside `Progman`, and the wallpaper
+///   `WorkerW` is a *child* of `Progman`, sitting below the icons. This is what Windows 11
+///   build 26200 does, and it is where Wallpaper Engine parents its own surfaces.
+///
+/// `0x052C` asks Explorer to create the `WorkerW` if none exists; it is a no-op once one does.
+unsafe fn acquire_workerw() -> Result<(HWND, &'static str)> {
     let progman = FindWindowW(w!("Progman"), None)?;
-    let mut res = 0usize;
 
-    SendMessageTimeoutW(progman, 0x052C, WPARAM(0), LPARAM(0), SMTO_NORMAL, 1000, Some(&mut res));
-    if let Some(h) = find_workerw() {
-        return Ok(h);
+    if let Some(found) = lookup(progman) {
+        return Ok(found);
     }
-    // Some Windows builds only spawn the WorkerW for this payload.
-    SendMessageTimeoutW(progman, 0x052C, WPARAM(0xD), LPARAM(0x1), SMTO_NORMAL, 1000, Some(&mut res));
-    find_workerw().ok_or_else(windows::core::Error::from_thread)
+    for (wp, lp) in [(0usize, 0isize), (0xD, 0x1), (0xD, 0x0)] {
+        let mut res = 0usize;
+        SendMessageTimeoutW(progman, 0x052C, WPARAM(wp), LPARAM(lp), SMTO_NORMAL, 1000, Some(&mut res));
+        if let Some(found) = lookup(progman) {
+            return Ok(found);
+        }
+    }
+    Err(windows::core::Error::new(
+        windows::Win32::Foundation::E_FAIL,
+        "no WorkerW found by either strategy, even after 0x052C",
+    ))
+}
+
+unsafe fn lookup(progman: HWND) -> Option<(HWND, &'static str)> {
+    if let Some(h) = find_workerw() {
+        return Some((h, "classic top-level sibling"));
+    }
+    if let Ok(h) = FindWindowExW(Some(progman), None, w!("WorkerW"), None) {
+        return Some((h, "child of Progman"));
+    }
+    None
 }
 
 unsafe extern "system" fn enum_cb(hwnd: HWND, lparam: LPARAM) -> BOOL {

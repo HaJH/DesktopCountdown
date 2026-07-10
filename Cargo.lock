@@ -193,6 +193,7 @@ dependencies = [
  "tracing-subscriber",
  "tray-icon",
  "windows",
+ "windows-numerics",
 ]
 
 [[package]]
