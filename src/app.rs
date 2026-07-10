@@ -12,6 +12,7 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+use crate::backoff::Backoff;
 use crate::config::{effective_for, Config};
 use crate::countdown::{breakdown, format_main, format_summary};
 use crate::dcomp::{Compositor, Surface};
@@ -50,7 +51,9 @@ pub struct App {
     workerw: HWND,
     panels: Vec<Panel>,
     last_lines: Option<Lines>,
-    ticks_since_health_check: u32,
+    workerw_backoff: Backoff,
+    /// `None` means "retry now"; `Some(at)` means "wait out the backoff until `at`".
+    retry_at: Option<std::time::Instant>,
     tray: Tray,
 }
 
@@ -74,14 +77,17 @@ impl App {
             watcher,
             painter,
             compositor,
-            workerw: workerw::acquire()?,
+            // Not yet acquired: a WorkerW may not exist yet (e.g. launched at boot,
+            // before Explorer is ready). The first `tick()` attempts acquisition and
+            // retries with backoff on failure instead of aborting startup.
+            workerw: HWND(std::ptr::null_mut()),
             panels: Vec::new(),
             last_lines: None,
-            ticks_since_health_check: 0,
+            workerw_backoff: Backoff::new(500, 8_000, 60_000),
+            retry_at: None,
             tray: Tray::new()?,
         };
         tracing::info!("tray icon created");
-        app.rebuild_panels()?;
 
         // `app` must not move for as long as `hwnd` exists: `create_controller_window`
         // stores `&mut app`'s address in GWLP_USERDATA, and `wndproc` dereferences it
@@ -177,13 +183,36 @@ impl App {
             self.reload();
         }
 
-        self.ticks_since_health_check += 1;
-        if self.ticks_since_health_check >= 2 {
-            self.ticks_since_health_check = 0;
-            if !workerw::is_alive(self.workerw) {
-                tracing::warn!("WorkerW vanished (Explorer restart?), reattaching");
-                self.workerw = workerw::acquire()?;
-                self.rebuild_panels()?;
+        if !workerw::is_alive(self.workerw) {
+            if let Some(at) = self.retry_at {
+                if std::time::Instant::now() < at {
+                    return Ok(()); // still waiting out the backoff
+                }
+            }
+            match workerw::acquire() {
+                Ok(hwnd) => {
+                    tracing::info!("attached to WorkerW");
+                    self.workerw = hwnd;
+                    self.workerw_backoff.reset();
+                    self.retry_at = None;
+                    self.rebuild_panels()?;
+                    let _ = self.tray.set_warning(false);
+                }
+                Err(e) => {
+                    let _ = self.tray.set_warning(true);
+                    return match self.workerw_backoff.next_delay_ms() {
+                        Some(ms) => {
+                            tracing::warn!("WorkerW not available ({e:#}), retrying in {ms}ms");
+                            self.retry_at =
+                                Some(std::time::Instant::now() + std::time::Duration::from_millis(ms));
+                            Ok(())
+                        }
+                        None => {
+                            tracing::error!("giving up on WorkerW after the retry budget: {e:#}");
+                            Ok(()) // keep the tray alive so the user can quit
+                        }
+                    };
+                }
             }
         }
 
@@ -199,7 +228,12 @@ impl App {
         }
 
         tracing::debug!(summary = ?lines.summary, main = %lines.main, "tick");
-        self.draw(&lines)?;
+        if let Err(e) = self.draw(&lines) {
+            tracing::warn!("draw failed, recreating the compositor: {e:#}");
+            self.compositor = Compositor::new(self.painter.d2d_factory())?;
+            self.rebuild_panels()?; // targets are bound to HWNDs; rebuild them too
+            self.draw(&lines)?; // one retry; a second failure propagates
+        }
         self.last_lines = Some(lines);
         Ok(())
     }
