@@ -7,4 +7,5 @@ pub mod layout;
 pub mod logging;
 pub mod monitors;
 pub mod paths;
+pub mod render;
 pub mod single_instance;
