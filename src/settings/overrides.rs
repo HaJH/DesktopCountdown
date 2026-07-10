@@ -160,4 +160,48 @@ mod tests {
         disable_style_override(&mut cfg, ID);
         assert_eq!(cfg.displays.len(), 1, "enabled=Some keeps the entry alive");
     }
+
+    /// Safety net for `has_style_override`'s field list: setting any single style/anchor/offset
+    /// field must make it report true. Without this, a field dropped from the OR-chain goes
+    /// unnoticed (the enable/disable tests only ever set or clear all 14 at once). This guards the
+    /// gap once per-field editing (Task 7 UI) can leave a lone field set.
+    #[test]
+    fn has_style_override_detects_each_field_individually() {
+        use crate::config::{Anchor, DrawMode};
+
+        let base = DisplayOverride {
+            id: ID.into(),
+            ..Default::default()
+        };
+        assert!(
+            !has_style_override(&base),
+            "an override with only id must report no style"
+        );
+
+        type Setter = fn(&mut DisplayOverride);
+        let setters: [Setter; 14] = [
+            |o| o.anchor = Some(Anchor::Center),
+            |o| o.offset_px = Some([1, 2]),
+            |o| o.font_family = Some("X".into()),
+            |o| o.font_weight = Some(400),
+            |o| o.size_px = Some(1.0),
+            |o| o.mode = Some(DrawMode::Fill),
+            |o| o.color = Some("#000000".into()),
+            |o| o.outline_color = Some("#000000".into()),
+            |o| o.outline_width_px = Some(1.0),
+            |o| o.opacity = Some(0.5),
+            |o| o.letter_spacing_em = Some(0.0),
+            |o| o.shadow = Some(true),
+            |o| o.tabular_figures = Some(true),
+            |o| o.show_summary_line = Some(true),
+        ];
+        for (i, set) in setters.iter().enumerate() {
+            let mut o = base.clone();
+            set(&mut o);
+            assert!(
+                has_style_override(&o),
+                "has_style_override missed field index {i}"
+            );
+        }
+    }
 }
