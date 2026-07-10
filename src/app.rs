@@ -18,6 +18,7 @@ use crate::dcomp::{Compositor, Surface};
 use crate::layout::place;
 use crate::monitors::{self, MonitorInfo};
 use crate::render::{Lines, Painter};
+use crate::watch::ConfigWatcher;
 use crate::workerw::{self, ChildWindow};
 
 const CTRL_CLASS: PCWSTR = w!("DesktopCountdownController");
@@ -39,10 +40,10 @@ struct Panel {
 }
 
 pub struct App {
-    #[allow(dead_code)] // kept for a future "reload on file change" feature; not read yet
     cfg_path: PathBuf,
     cfg: Config,
     target: Zoned,
+    watcher: ConfigWatcher,
     painter: Painter,
     compositor: Compositor,
     workerw: HWND,
@@ -57,6 +58,9 @@ impl App {
     pub fn run(cfg_path: PathBuf) -> Result<()> {
         let cfg = crate::config::load_or_create(&cfg_path)?;
         let target = cfg.target.to_zoned(jiff::tz::TimeZone::system())?;
+        // Borrows `cfg_path` to find its parent directory, so build it before
+        // `cfg_path` is moved into `App` below.
+        let watcher = ConfigWatcher::new(&cfg_path)?;
 
         let painter = Painter::new()?;
         let compositor = Compositor::new(painter.d2d_factory())?;
@@ -65,6 +69,7 @@ impl App {
             cfg_path,
             cfg,
             target,
+            watcher,
             painter,
             compositor,
             workerw: workerw::acquire()?,
@@ -113,9 +118,43 @@ impl App {
         Ok(())
     }
 
+    /// Re-reads `config.toml` after the watcher reports a settled change. A malformed
+    /// or out-of-range save must never blank the screen (design §6), so on failure the
+    /// previous config is kept untouched and only an error is logged.
+    fn reload(&mut self) {
+        match crate::config::load_or_create(&self.cfg_path) {
+            Ok(new_cfg) => {
+                let displays_changed =
+                    new_cfg.displays != self.cfg.displays || new_cfg.layout != self.cfg.layout;
+                let target_changed = new_cfg.target != self.cfg.target;
+
+                self.cfg = new_cfg;
+                if target_changed {
+                    match self.cfg.target.to_zoned(jiff::tz::TimeZone::system()) {
+                        Ok(z) => self.target = z,
+                        Err(e) => tracing::error!("bad target: {e:#}"),
+                    }
+                }
+                if displays_changed {
+                    if let Err(e) = self.rebuild_panels() {
+                        tracing::error!("rebuilding panels failed: {e:#}");
+                    }
+                }
+                self.last_lines = None; // force a redraw with the new style
+                tracing::info!("config reloaded");
+            }
+            // Keeping the last valid config beats blanking the screen.
+            Err(e) => tracing::error!("config reload rejected, keeping previous: {e:#}"),
+        }
+    }
+
     /// Runs once per `WM_TIMER`: checks WorkerW health, computes the current
     /// countdown text, and redraws only when it changed since the last tick.
     fn tick(&mut self) -> Result<()> {
+        if self.watcher.changed() {
+            self.reload();
+        }
+
         self.ticks_since_health_check += 1;
         if self.ticks_since_health_check >= 2 {
             self.ticks_since_health_check = 0;
