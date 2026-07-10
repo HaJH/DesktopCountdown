@@ -1,6 +1,7 @@
 //! Draws the countdown onto any ID2D1RenderTarget. Knows nothing about
 //! DirectComposition, windows, or where the pixels end up.
 
+mod outline;
 mod text;
 
 use anyhow::{anyhow, Result};
@@ -149,6 +150,7 @@ impl Painter {
         alpha: f32,
     ) -> Result<()> {
         let ink = self.brush(rt, &style.color, alpha)?;
+        let line = self.brush(rt, &style.outline_color, alpha)?;
         let shadow = self.brush(rt, "#000000", SHADOW_ALPHA * alpha)?;
 
         let sum_w = c.summary.as_ref().map(|s| s.1).unwrap_or(0.0);
@@ -159,6 +161,8 @@ impl Painter {
         let main_y = oy + c.pad + sum_h + c.gap;
 
         if style.shadow {
+            // Both fill and stroke draw in the shadow colour here, otherwise an
+            // outline-mode glyph would show a filled shadow behind a hollow glyph.
             self.pass(
                 rt,
                 c,
@@ -168,13 +172,15 @@ impl Painter {
                 main_y + SHADOW_OFFSET,
                 style,
                 &shadow,
+                &shadow,
             )?;
         }
-        self.pass(rt, c, sum_x, sum_y, main_x, main_y, style, &ink)?;
+        self.pass(rt, c, sum_x, sum_y, main_x, main_y, style, &ink, &line)?;
         Ok(())
     }
 
-    /// One draw of both lines. Task 10 adds the outline stroke here.
+    /// One draw of both lines: `DrawMode::Fill`/`Both` fill with `fill`,
+    /// `DrawMode::Outline`/`Both` stroke glyph outlines with `stroke`.
     #[allow(clippy::too_many_arguments)]
     fn pass(
         &self,
@@ -185,15 +191,39 @@ impl Painter {
         main_x: f32,
         main_y: f32,
         style: &Style,
-        brush: &ID2D1SolidColorBrush,
+        fill: &ID2D1SolidColorBrush,
+        stroke: &ID2D1SolidColorBrush,
     ) -> Result<()> {
         if matches!(style.mode, DrawMode::Fill | DrawMode::Both) {
             unsafe {
                 if let Some((l, _, _)) = &c.summary {
-                    rt.DrawTextLayout(Vector2 { X: sum_x, Y: sum_y }, l, brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
+                    rt.DrawTextLayout(Vector2 { X: sum_x, Y: sum_y }, l, fill, D2D1_DRAW_TEXT_OPTIONS_NONE);
                 }
-                rt.DrawTextLayout(Vector2 { X: main_x, Y: main_y }, &c.main, brush, D2D1_DRAW_TEXT_OPTIONS_NONE);
+                rt.DrawTextLayout(Vector2 { X: main_x, Y: main_y }, &c.main, fill, D2D1_DRAW_TEXT_OPTIONS_NONE);
             }
+        }
+        if matches!(style.mode, DrawMode::Outline | DrawMode::Both) {
+            if let Some((l, _, _)) = &c.summary {
+                self.stroke_layout(rt, l, sum_x, sum_y, stroke, style.outline_width_px)?;
+            }
+            self.stroke_layout(rt, &c.main, main_x, main_y, stroke, style.outline_width_px)?;
+        }
+        Ok(())
+    }
+
+    /// Strokes every glyph run's outline geometry in `layout`, drawn as if `layout`
+    /// were placed at (`x`, `y`) via `DrawTextLayout`.
+    fn stroke_layout(
+        &self,
+        rt: &ID2D1RenderTarget,
+        layout: &IDWriteTextLayout,
+        x: f32,
+        y: f32,
+        brush: &ID2D1SolidColorBrush,
+        width: f32,
+    ) -> Result<()> {
+        for geom in outline::collect_geometry(&self.d2d, layout, x, y)? {
+            unsafe { rt.DrawGeometry(&geom, brush, width, None) };
         }
         Ok(())
     }
@@ -393,5 +423,47 @@ mod tests {
         let a = p.measure(&Lines { summary: None, main: "11:11:11".into() }, &style).unwrap();
         let b = p.measure(&Lines { summary: None, main: "00:00:00".into() }, &style).unwrap();
         assert_eq!(a.0, b.0);
+    }
+
+    #[test]
+    fn outline_mode_draws_less_ink_than_fill() {
+        let p = Painter::new().unwrap();
+        let base = Style { shadow: false, ..Style::default() };
+        let (f, fw, fh) = draw(&p, &lines(), &Style { mode: DrawMode::Fill, ..base.clone() });
+        let (o, ow, oh) = draw(&p, &lines(), &Style { mode: DrawMode::Outline, ..base.clone() });
+        assert!(coverage(&o, ow, oh) > 0.005, "outline drew nothing");
+        assert!(
+            coverage(&o, ow, oh) < coverage(&f, fw, fh),
+            "outline {} should be lighter than fill {}",
+            coverage(&o, ow, oh),
+            coverage(&f, fw, fh)
+        );
+    }
+
+    #[test]
+    fn both_mode_draws_more_ink_than_fill() {
+        let p = Painter::new().unwrap();
+        let base = Style { shadow: false, outline_width_px: 3.0, ..Style::default() };
+        let (f, fw, fh) = draw(&p, &lines(), &Style { mode: DrawMode::Fill, ..base.clone() });
+        let (b, bw, bh) = draw(&p, &lines(), &Style { mode: DrawMode::Both, ..base.clone() });
+        assert!(coverage(&b, bw, bh) > coverage(&f, fw, fh));
+    }
+
+    #[test]
+    fn outline_mode_leaves_glyph_centres_transparent() {
+        // A thin outline of a large '0' must leave its interior empty.
+        let p = Painter::new().unwrap();
+        let style = Style {
+            mode: DrawMode::Outline,
+            shadow: false,
+            show_summary_line: false,
+            size_px: 200.0,
+            outline_width_px: 1.5,
+            ..Style::default()
+        };
+        let l = Lines { summary: None, main: "0".into() };
+        let (px, w, h) = draw(&p, &l, &style);
+        let a = px[(((h / 2) * w + w / 2) * 4 + 3) as usize];
+        assert_eq!(a, 0, "the centre of '0' should be transparent in outline mode");
     }
 }

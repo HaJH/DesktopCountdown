@@ -24,6 +24,10 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 windows-numerics = "0.3"
+# Direct dependency required so the `#[implement]` macro's generated code (which
+# refers to the `windows_core` crate by name) resolves; we otherwise only use it
+# through the `windows::core` re-export.
+windows-core = "0.62"
 
 [dependencies.windows]
 version = "0.62"
