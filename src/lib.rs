@@ -12,6 +12,7 @@ pub mod logging;
 pub mod monitors;
 pub mod paths;
 pub mod render;
+pub mod settings;
 pub mod single_instance;
 pub mod tray;
 pub mod watch;
