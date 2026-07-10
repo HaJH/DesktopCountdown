@@ -1,7 +1,7 @@
 # DesktopCountdown 설계 문서
 
 - 작성일: 2026-07-10
-- 상태: 승인됨 (구현 계획 대기)
+- 상태: 승인됨. 스파이크 결과에 따라 §3.3/§8/§9/§12 개정 (2026-07-10)
 - 대상 플랫폼: Windows 10 1809 이상 / Windows 11
 - 언어: Rust (2021 edition, rustc 1.92)
 
@@ -85,30 +85,88 @@ OpenType `tnum`(tabular figures)을 기본 활성화해 방지한다. 폰트가 
 
 **Win32 모듈:**
 
-- `wallpaper_window` — Progman에 `0x052C`를 보내 WorkerW를 확보하고, `SHELLDLL_DefView` 자식이 없는
-  쪽을 골라 우리 창을 `SetParent`한다. 부모가 살아있는지 감시하다 사라지면 재부착한다.
-- `render` — Direct2D WIC 비트맵 렌더 타깃 + DirectWrite. 그리기 방식 3종(`fill` / `outline` / `both`),
-  그림자, 자간을 처리하고 프리멀티플라이드 BGRA 픽셀 버퍼를 내놓는다. 아웃라인은 커스텀
-  `IDWriteTextRenderer`로 글리프 런을 받아 `GetGlyphRunOutline`으로 지오메트리를 뽑아 stroke한다.
+- `workerw` — 벽지 레이어 창을 찾고 우리 창을 그 자식으로 만든다. 상세는 §3.3.
+  부모가 살아있는지 감시하다 사라지면 재부착한다.
+- `dcomp` — DirectComposition 디바이스·타깃·비주얼·표면을 소유한다. 표면에 그릴 때 쓸
+  `ID2D1DeviceContext`를 내주고, 그린 뒤 커밋한다. 창 크기가 바뀌면 표면을 다시 만든다.
+- `render` — DirectWrite 텍스트 레이아웃 + Direct2D 드로잉. 그리기 방식 3종
+  (`fill` / `outline` / `both`), 그림자, 자간을 처리한다. 아웃라인은 커스텀 `IDWriteTextRenderer`로
+  글리프 런을 받아 `GetGlyphRunOutline`으로 지오메트리를 뽑아 stroke한다.
+
+  `render`는 **DirectComposition을 모른다.** 그리는 대상을 `&ID2D1RenderTarget`으로만 받는다.
+  실행 시에는 `dcomp`가 넘겨주는 디바이스 컨텍스트(`ID2D1DeviceContext`는 `ID2D1RenderTarget`를
+  상속한다)를 받고, 테스트에서는 WIC 비트맵 렌더 타깃을 받아 픽셀을 읽어 검증한다.
 
   텍스트 안티에일리어싱은 반드시 `D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE`로 둔다. 기본값인 ClearType은
-  서브픽셀 렌더링이라 알파 채널이 망가져 레이어드 창에서 색 번짐이 생긴다.
+  서브픽셀 렌더링이라 투명 배경 위에서 알파 채널이 망가진다.
 
   그림자는 블러 없는 오프셋 그림자다(같은 글자를 (2,2)만큼 옮겨 검정 반투명으로 먼저 그린다).
-  가우시안 블러는 `ID2D1DeviceContext`의 이펙트 파이프라인이 필요해 1차 버전 범위 밖이다.
+  `ID2D1DeviceContext`를 쓰게 되었으므로 가우시안 블러 이펙트도 기술적으로 가능해졌지만,
+  1차 버전 범위 밖으로 둔다.
+
+  불투명도(`style.opacity`)는 브러시 알파에 곱해 넣는다. 별도의 비주얼 불투명도를 쓰지 않는다.
 - `monitors` — 모니터 열거, 안정적인 디바이스 ID 조회, DPI.
 - `tray` — 트레이 아이콘과 메뉴(설정 / 다시 불러오기 / 종료).
 - `autostart` — `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 등록/해제.
 
 ### 3.3 창 구성
 
-활성화된 모니터마다 WorkerW의 자식 창을 하나씩 만든다.
+**이 절의 내용은 전부 실측으로 확인했다.** 근거는 `docs/superpowers/plans/spike-result.md`.
 
-스타일은 `WS_CHILD | WS_VISIBLE`, 확장 스타일은 `WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE`.
+#### 벽지 레이어 창 찾기
 
-**창 크기는 모니터 전체가 아니라 글자 바운딩 박스 + 그림자 여백만큼만 잡는다.** 2560×1440 전체를
-레이어드 비트맵으로 매초 올리면 14MB를 밀어 올리는 셈인데, 실제로 칠하는 건 글자 몇 개뿐이다.
-문자열 폭이 변하면 `SetWindowPos`로 창을 다시 잡아 가운데 정렬을 유지한다.
+두 가지 배치가 실제로 존재한다.
+
+- **고전**: `SHELLDLL_DefView`가 최상위 `WorkerW` 안에 있고, 벽지용 `WorkerW`는 그 다음 최상위 형제다.
+- **Progman의 자식**: `SHELLDLL_DefView`가 `Progman` 안에 그대로 있고, 벽지용 `WorkerW`는 `Progman`의
+  자식으로 아이콘 아래에 놓인다. 개발 환경(Windows 11 build 26200)이 이쪽이다.
+
+고전 방식을 먼저 시도하고, 실패하면 `FindWindowExW(progman, NULL, "WorkerW", NULL)`로 폴백한다.
+둘 다 없을 때만 `Progman`에 `0x052C`를 보내 생성을 요청하고 다시 찾는다. WorkerW가 이미 있으면
+이 메시지는 아무 일도 하지 않는다.
+
+#### 자식 창 만들기
+
+**`CreateWindowEx`에 다른 프로세스(explorer.exe)가 소유한 창을 부모로 넘길 수 없다.** `NULL`을
+반환하고 `GetLastError()`는 0이다. 순서는 이렇다.
+
+1. 부모 없이 `WS_POPUP`으로 최상위 창을 만든다. 확장 스타일은 `WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW`.
+2. `SetParent(hwnd, workerw)`.
+3. `SetWindowLongPtrW(hwnd, GWL_STYLE, WS_CHILD | WS_VISIBLE)` — `SetParent`는 스타일을 고치지 않는다.
+4. `SetWindowPos(..., SWP_FRAMECHANGED | SWP_NOACTIVATE)` + `ShowWindow(hwnd, SW_SHOW)`.
+
+좌표는 `ScreenToClient(workerw, ..)`로 부모 클라이언트 좌표로 바꿔 넘긴다.
+
+**창에 `WS_EX_LAYERED`를 쓰지 않는다.** 픽셀은 DirectComposition 비주얼이 공급한다.
+
+#### 왜 DirectComposition인가
+
+배경 레이어에서 안정적으로 합성되는 자식 창은 **자기 DWM 비주얼을 갖는 것뿐이다.** 실측 결과:
+
+| 방식 | 결과 |
+|---|---|
+| 평범한 자식 창 + GDI 페인트 | Explorer가 벽지를 다시 칠할 때 덮인다 |
+| 레이어드 자식 + `SetLayeredWindowAttributes` | 보인다. 단 균일 알파뿐 |
+| 레이어드 자식 + `UpdateLayeredWindow` | **`Ok`를 반환하면서 아무것도 그리지 않는다** |
+| 자식 창 + DirectComposition | 픽셀별 알파가 정상 합성된다 |
+
+글자 가장자리 안티에일리어싱에는 픽셀별 알파가 필요하므로 DirectComposition을 쓴다. 덕분에 벽지가
+무엇인지 알 필요가 전혀 없다.
+
+프로세스마다 D3D11 디바이스 하나와 `IDCompositionDevice` 하나를 만들고, 창마다
+`IDCompositionTarget` + `IDCompositionVisual` + `IDCompositionSurface`를 둔다.
+`surface.BeginDraw()`가 돌려주는 오프셋을 모든 그리기 좌표에 더해야 한다 — 표면이 아틀라스의 일부일
+수 있다.
+
+#### 크기와 z-순서
+
+**창 크기는 모니터 전체가 아니라 글자 바운딩 박스 + 그림자 여백만큼만 잡는다.** 실제로 칠하는 건
+글자 몇 개뿐이다. 문자열 폭이 변하면 `SetWindowPos`로 창을 다시 잡고 표면을 다시 만들어 가운데
+정렬을 유지한다.
+
+Wallpaper Engine 같은 다른 벽지 앱도 같은 WorkerW에 자식 창을 붙인다. 실측에서는 우리 창이 그 위에
+남았지만 보장된 순서는 아니므로, 매 갱신마다 우리 창이 부모의 최상단 자식인지 확인하고 아니면
+`SetWindowPos(HWND_TOP)`으로 올린다.
 
 프로세스는 시작 시 `SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)`를 호출한다. WorkerW
 좌표계는 가상 데스크톱의 물리 픽셀이고, 이 환경에서는 원점이 음수다(최좌측 모니터가 X=-3840).
@@ -219,7 +277,7 @@ DPI 인식 설정 → 단일 인스턴스 뮤텍스 → 설정 로드 → 모니
 | 설정 TOML 파싱 실패 | 이전 설정 유지. 트레이 아이콘에 경고 표시, 로그에 이유 기록. |
 | 설정한 폰트가 없음 | 시스템 기본 고정폭 폰트로 폴백. 로그 기록. |
 | WorkerW 확보 실패 | 지수 백오프 재시도(최대 60초). 그 후 트레이에 실패 상태 표시. |
-| Direct2D 디바이스 소실 | 리소스 재생성 후 1회 재시도. 실패하면 다음 틱에 다시 시도. |
+| D3D11/DirectComposition 디바이스 소실 | D3D11 디바이스부터 재생성해 타깃·비주얼·표면을 다시 만든다. 실패하면 다음 틱에 재시도. |
 | 패닉 | panic hook이 로그를 남기고 트레이 아이콘을 정리한 뒤 종료. |
 
 로그는 `%LOCALAPPDATA%\DesktopCountdown\log.txt`에 `tracing`으로 남긴다. 콘솔 창이 없는 앱이라
@@ -237,42 +295,48 @@ Win32 경계선을 따라 갈린다.
 - `config`: 오버라이드 없음 / 일부만 있음 / 전부 있음. 잘못된 색상·범위 밖 opacity 거부.
 - `layout`: 음수 좌표 모니터(X=-3840), 세로 모니터(1440×2560)에서 9개 앵커 × 오프셋 조합.
 
-**렌더 스모크 테스트:** 오프스크린 비트맵에 그려서 알파 커버리지가 0보다 큰지, 글자 바운딩 박스가
-기대한 사각형 안에 들어오는지 확인한다.
+**렌더 스모크 테스트:** `render`는 그리는 대상을 `&ID2D1RenderTarget`으로만 받으므로, 테스트는 WIC
+비트맵 렌더 타깃을 넘겨 오프스크린으로 그린 뒤 픽셀을 읽는다. 알파 커버리지가 0보다 큰지, 글자
+바운딩 박스가 기대한 사각형 안에 들어오는지 확인한다. DirectComposition은 관여하지 않는다.
+
+`dcomp` 모듈은 별도 스모크 테스트를 갖는다: 디바이스 생성, 숨은 최상위 창에 타깃 부착, 표면에
+한 번 그리기까지가 성공하는지. WorkerW는 필요 없다.
 
 **픽셀 단위 골든 이미지 비교는 하지 않는다.** 폰트 힌팅과 안티에일리어싱이 머신마다 달라 깨지는
 테스트가 된다.
 
 **수동 검증:** 스파이크(§8)와, 4개 모니터에서의 실제 표시 확인.
 
-## 8. 스파이크: 레이어드 자식 창 검증
+## 8. 스파이크 (완료)
 
-구현 첫 작업. WorkerW 자식 창에 픽셀별 알파가 제대로 합성되는지 확인한다.
+구현 첫 작업으로 수행했다. **A안(레이어드 자식 창 + `UpdateLayeredWindow`)은 실패했고,
+DirectComposition으로 전환했다.** 상세 결과와 재현 방법은
+`docs/superpowers/plans/spike-result.md`에 있으며, 검증에 쓴 진단 바이너리는 커밋 `64f08cc`에 남아 있다.
 
-수십 줄짜리 별도 바이너리로, 반투명 그라디언트 사각형 하나를 `UpdateLayeredWindow`로 올린다.
+확인된 것:
 
-**성공 기준 (넷 다 통과해야 함):**
+- 벽지 레이어 창은 `Progman`의 자식 `WorkerW`다. `0x052C`는 이미 존재하므로 무효였다.
+- `CreateWindowEx`에 타 프로세스 창을 부모로 넘길 수 없다. `SetParent`를 써야 한다.
+- `UpdateLayeredWindow`는 자식 창에서 `Ok`를 반환하면서 아무것도 그리지 않는다.
+  같은 코드가 최상위 창에서는 정상 동작하므로, 픽셀 버퍼는 문제가 아니었다.
+- 평범한 자식 창은 Explorer의 벽지 재도색에 덮인다.
+- DirectComposition 자식 창은 픽셀별 알파를 정상 합성한다. Wallpaper Engine 표면 위, 데스크톱
+  아이콘 아래에 그려지고, 바탕화면 새로 고침에도 유지된다.
 
-1. 바탕화면 아이콘이 사각형 **위에** 보인다.
-2. 사각형의 반투명 영역으로 벽지가 비친다.
-3. 다른 창을 띄우면 사각형이 가려진다.
-4. 두 번째 모니터에도 같은 방식으로 그려진다.
+## 9. 폴백: 벽지 직접 합성 (채택하지 않음)
 
-하나라도 실패하면 §9의 폴백으로 전환한다.
+DirectComposition이 깨질 경우에만 꺼내 쓴다. 지금은 필요 없다.
 
-## 9. 폴백: 벽지 직접 합성 (B안)
+`WS_EX_LAYERED` 자식 창에 `SetLayeredWindowAttributes(alpha 255)`를 걸어 완전 불투명하게 만든 뒤,
+`IDesktopWallpaper` COM으로 모니터별 벽지 경로와 맞춤 모드(채우기 / 맞춤 / 늘이기 / 바둑판 / 가운데 /
+걸치기)를 얻어 WIC로 디코드하고, 창 영역에 해당하는 부분만 잘라 배경으로 깐 다음 그 위에 글자를 그린다.
+이 방식이 실제로 보이고 바탕화면 새로 고침에도 유지되는 것은 스파이크에서 확인했다.
 
-스파이크가 실패할 경우에만 채택한다.
-
-레이어드 창을 쓰지 않고 불투명 자식 창을 만든다. `IDesktopWallpaper` COM으로 모니터별 벽지 경로와
-맞춤 모드(채우기 / 맞춤 / 늘이기 / 바둑판 / 가운데 / 걸치기)를 얻어 WIC로 디코드하고, 우리 창 영역에
-해당하는 부분만 잘라 배경으로 깐 다음 그 위에 글자를 그린다.
+**평범한(레이어드 아닌) 자식 창으로는 안 된다** — Explorer의 벽지 재도색에 덮인다.
 
 추가로 필요한 것: 맞춤 모드별 소스 사각형 계산(순수 함수, 단위 테스트 대상), 벽지 변경 감지
-(`WM_SETTINGCHANGE`), 단색 배경 처리(`IDesktopWallpaper::GetBackgroundColor`).
-
-DirectWrite 렌더링 코드, 설정, 트레이, 시간 계산, 레이아웃은 A안과 그대로 공유한다. 버려지는 것은
-창 생성과 업데이트 부분뿐이다.
+(`WM_SETTINGCHANGE`), 단색 배경 처리(`IDesktopWallpaper::GetBackgroundColor`), 슬라이드쇼 대응.
+DirectWrite 렌더링 코드, 설정, 트레이, 시간 계산, 레이아웃은 그대로 공유한다.
 
 ## 10. 비목표
 
@@ -283,16 +347,20 @@ DirectWrite 렌더링 코드, 설정, 트레이, 시간 계산, 레이아웃은 
 - 토스트 알림
 - 항상-위(always-on-top) 모드
 - 다국어 (UI는 한국어)
-- 벽지 슬라이드쇼 대응 (A안에서는 애초에 불필요)
+- 벽지 슬라이드쇼 대응 (DirectComposition에서는 애초에 불필요)
 
 `§5.2`의 "문자열이 같으면 렌더 스킵"과 `§3.3`의 "창을 글자 크기만큼만" 두 결정은 애니메이션을
 붙이려면 되돌려야 한다. 애니메이션이 비목표이므로 지금은 이 최적화를 택한다.
+
+DirectComposition을 쓰게 되면서 애니메이션·블러·트랜지션이 기술적으로는 훨씬 가까워졌다. 그래도
+1차 버전에서는 하지 않는다.
 
 ## 11. 크레이트
 
 | 크레이트 | 용도 |
 |---|---|
-| `windows` | Win32, Direct2D, DirectWrite, WIC, COM, 레지스트리 |
+| `windows` | Win32, Direct2D, DirectWrite, DirectComposition, Direct3D11, DXGI, WIC, COM, 레지스트리 |
+| `windows-numerics` | `Vector2` — `windows` 0.62의 D2D 좌표 타입. 별도 크레이트라 직접 의존성이 필요하다 |
 | `jiff` | 로컬 시간대 civil datetime 계산 |
 | `serde`, `toml` | 설정 직렬화 |
 | `notify` | 설정 파일 감시 |
@@ -303,10 +371,19 @@ DirectWrite 렌더링 코드, 설정, 트레이, 시간 계산, 레이아웃은 
 
 ## 12. 알려진 리스크
 
-**WorkerW 트릭은 비공식 동작이다.** `0x052C`는 문서화되지 않은 메시지이고, Windows 업데이트로
-Explorer의 창 구조가 바뀌면 깨질 수 있다. 부모 창 유효성 감시(§5.3)로 Explorer 재시작은 복구하지만,
-구조 자체가 바뀌면 `wallpaper_window` 모듈을 고쳐야 한다. 이 리스크는 배경 레이어 표시를 선택한 대가로
-받아들인다.
+**WorkerW 트릭은 비공식 동작이다.** `0x052C`는 문서화되지 않은 메시지이고, Explorer의 창 구조는
+Windows 버전마다 다르다 — 실제로 개발 환경에서는 문서와 예제가 전제하는 "최상위 WorkerW 형제"가
+존재하지 않았다. 두 가지 배치를 모두 다루고(§3.3), 부모 창 유효성 감시(§5.3)로 Explorer 재시작을
+복구한다. 그래도 구조가 또 바뀌면 `workerw` 모듈을 고쳐야 한다. 이 리스크는 배경 레이어 표시를
+선택한 대가로 받아들인다.
 
-**레이어드 자식 창의 합성 동작은 미검증이다.** 자식 창의 `WS_EX_LAYERED` 지원은 Windows 8부터지만,
-Explorer가 만든 WorkerW 안에서의 동작은 문서에 없다. §8의 스파이크가 이 리스크를 첫 작업에서 해소한다.
+**`UpdateLayeredWindow`는 자식 창에서 조용히 실패한다.** `Ok`를 반환하고도 아무것도 그리지 않는다.
+스파이크에서 확인했다. 혹시 나중에 누군가 "레이어드 창으로 하면 더 간단한데" 하고 되돌리려 한다면,
+이 문장이 그 이유다.
+
+**DirectComposition 디바이스는 소실될 수 있다.** GPU 드라이버 갱신이나 원격 데스크톱 전환 시
+`DXGI_ERROR_DEVICE_REMOVED`가 난다. D3D11 디바이스부터 다시 만들어 타깃·비주얼·표면을 재구성한다.
+§6의 재시도 정책이 이를 다룬다.
+
+**다른 벽지 앱과 같은 부모를 공유한다.** Wallpaper Engine도 같은 WorkerW에 자식 창을 붙인다.
+실측에서는 우리 창이 위에 남았지만 보장은 없으므로 매 갱신마다 최상단 자식인지 확인한다(§3.3).
