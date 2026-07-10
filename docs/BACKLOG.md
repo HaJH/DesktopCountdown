@@ -56,3 +56,9 @@
 - `breakdown`의 `.expect()` 메시지가 "jiff 버그"라 단정 — 실 날짜 범위에서 도달 불가.
 - `pass()` 8인자 (`#[allow(clippy::too_many_arguments)]`) — 순수 미관.
 - 콜드 스타트 시 초 한 번 스킵 — 표시값은 항상 정확, 미관.
+
+## 설정 창 (계획 2) defer
+
+- **모니터 미리보기 merge 중복.** `settings/app.rs`의 `ui_monitor`가 12필드 인라인 `unwrap_or`
+  병합으로 유효 스타일을 계산하는데, 이는 `config::merge::effective_for`와 동일 로직. 향후 `Style`
+  필드 추가 시 두 곳을 수동 동기화해야 함. → 미리보기도 `effective_for`를 쓰도록 정리.
