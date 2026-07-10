@@ -71,6 +71,9 @@ impl App {
     /// Win32 message loop until `WM_QUIT`.
     pub fn run(cfg_path: PathBuf) -> Result<()> {
         let cfg = crate::config::load_or_create(&cfg_path)?;
+        if let Err(e) = crate::autostart::set_enabled(cfg.general.autostart) {
+            tracing::error!("autostart update failed: {e:#}");
+        }
         let target = cfg.target.to_zoned(jiff::tz::TimeZone::system())?;
         // Borrows `cfg_path` to find its parent directory, so build it before
         // `cfg_path` is moved into `App` below.
@@ -162,6 +165,9 @@ impl App {
                 }
                 self.last_lines = None; // force a redraw with the new style
                 let _ = self.tray.set_warning(false);
+                if let Err(e) = crate::autostart::set_enabled(self.cfg.general.autostart) {
+                    tracing::error!("autostart update failed: {e:#}");
+                }
                 tracing::info!("config reloaded");
             }
             // Keeping the last valid config beats blanking the screen.

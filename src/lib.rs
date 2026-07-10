@@ -1,6 +1,7 @@
 //! DesktopCountdown — draws a countdown onto the desktop wallpaper layer.
 
 pub mod app;
+pub mod autostart;
 pub mod backoff;
 pub mod color;
 pub mod config;
