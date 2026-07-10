@@ -1,0 +1,54 @@
+# DesktopCountdown
+
+바탕화면 배경 레이어에 마감까지 남은 시간을 표시하는 Windows 앱.
+
+```
+3m 2w 0d
+2544:18:07
+```
+
+아랫줄이 남은 총 시간, 윗줄은 개월/주/일 요약입니다. 데스크톱 아이콘 아래, Wallpaper Engine 같은
+다른 배경 앱 위에 그려지므로 다른 창을 가리지 않고 배경도 가리지 않습니다.
+
+## 설치
+
+```
+cargo build --release
+```
+
+`target\release\desktop-countdown.exe`를 실행하면 콘솔 창 없이 트레이 아이콘만 나타납니다.
+
+## 동작 방식
+
+데스크톱 아이콘 아래에서 벽지를 그리는 `WorkerW` 창을 찾아 그 자식 창을 만들고, DirectComposition으로 픽셀별
+알파를 가진 비주얼을 그 위에 얹어 그립니다. `UpdateLayeredWindow`는 자식 창에서 `Ok`를 반환하면서도
+아무것도 그리지 않는다는 것을 스파이크에서 확인했기 때문에 DirectComposition을 씁니다(자세한 내용은
+`docs/superpowers/plans/spike-result.md`). 이 창은 데스크톱 아이콘 아래, 다른 배경 앱(Wallpaper
+Engine 등) 위에 위치하며, 바탕화면 새로 고침에도 살아남습니다.
+
+## 설정
+
+`%APPDATA%\DesktopCountdown\config.toml`을 편집하면 저장 후 곧바로(약 200ms 디바운스) 화면에
+반영됩니다. 트레이 아이콘 우클릭 → "설정 파일 열기"로 메모장에서 열 수 있습니다.
+
+주요 항목은 `target`(마감 시각), `[style]`의 `font_family`·`size_px`·`color`·`mode`,
+`[layout]`의 `anchor`·`offset_px`입니다. 모니터별로 다르게 하려면 `[[display]]` 블록을
+추가합니다. 전체 스키마는 설계 문서 §4를 보세요.
+
+설정이 잘못되면 이전 설정을 유지하고 트레이 툴팁에 경고를 띄웁니다.
+이유는 `%LOCALAPPDATA%\DesktopCountdown\log.txt`에 남습니다.
+
+## 알려진 제약
+
+- 바탕화면 배경 레이어에 그리므로 마우스로 만질 수 없습니다. 모든 조작은 트레이 아이콘과 설정
+  파일로 합니다.
+- 배경 레이어에 붙는 방법(`WorkerW` 탐색, 필요 시 `Progman`에 `0x052C` 전송)은 문서화되지 않은
+  Windows 동작입니다. Explorer가 재시작되면 자동으로 다시 붙지만, 향후 Windows 업데이트로 창
+  구조가 바뀌면 깨질 수 있습니다.
+- 목표 시각에 도달하면 `00:00:00`에서 멈춥니다. 경과 시간을 세지 않고, 알림도 띄우지 않습니다.
+
+## 문서
+
+- 설계: `docs/superpowers/specs/2026-07-10-desktop-countdown-design.md`
+- 스파이크 결과: `docs/superpowers/plans/spike-result.md`
+- 구현 계획: `docs/superpowers/plans/`
