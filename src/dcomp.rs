@@ -82,6 +82,58 @@ fn create_d3d11_device() -> Result<ID3D11Device> {
     }
 }
 
+/// Releases the surface lock taken by `IDCompositionSurface::BeginDraw`, even on unwind.
+/// Skipping it leaves the surface locked and every later frame fails with
+/// DCOMPOSITION_ERROR_SURFACE_BEING_RENDERED.
+struct SurfaceLock<'a> {
+    surface: &'a IDCompositionSurface,
+    armed: bool,
+}
+
+impl SurfaceLock<'_> {
+    /// Ends the draw and returns its result, disarming the guard.
+    fn end(mut self) -> windows::core::Result<()> {
+        self.armed = false;
+        unsafe { self.surface.EndDraw() }
+    }
+}
+
+impl Drop for SurfaceLock<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            unsafe {
+                let _ = self.surface.EndDraw();
+            }
+        }
+    }
+}
+
+/// Ends the `ID2D1DeviceContext` draw started by `BeginDraw`, even on unwind. Skipping
+/// `EndDraw` loses Direct2D's coalesced per-frame error and leaves this frame's drawing
+/// commands unflushed to the surface bitmap they targeted.
+struct DeviceContextDraw<'a> {
+    dc: &'a ID2D1DeviceContext,
+    armed: bool,
+}
+
+impl DeviceContextDraw<'_> {
+    /// Ends the draw and returns its result, disarming the guard.
+    fn end(mut self) -> windows::core::Result<()> {
+        self.armed = false;
+        unsafe { self.dc.EndDraw(None, None) }
+    }
+}
+
+impl Drop for DeviceContextDraw<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            unsafe {
+                let _ = self.dc.EndDraw(None, None);
+            }
+        }
+    }
+}
+
 impl Compositor {
     pub fn new(d2d_factory: &ID2D1Factory1) -> Result<Self> {
         unsafe {
@@ -125,9 +177,11 @@ impl Compositor {
             let mut offset = POINT::default();
             let dxgi_surface: IDXGISurface = surface.BeginDraw(None, &mut offset)?;
 
-            // The surface is locked from here. `surface.EndDraw()` must run no matter what
-            // fails below, or it stays locked forever and every later `draw` call on this
-            // Surface fails with DCOMPOSITION_ERROR_SURFACE_BEING_RENDERED.
+            // The surface is locked from here. `SurfaceLock::drop` runs `surface.EndDraw()`
+            // unconditionally -- on an early `?` return below *and* on a panic unwinding
+            // through `f` -- so the surface is never left locked. See `SurfaceLock`.
+            let surface_lock = SurfaceLock { surface, armed: true };
+
             let result = (|| -> Result<()> {
                 let dc: ID2D1DeviceContext =
                     self.d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
@@ -148,14 +202,21 @@ impl Compositor {
                 let rt: ID2D1RenderTarget = dc.cast()?;
 
                 dc.BeginDraw();
+                // Guards, not `catch_unwind`: `f` will run inside a window procedure
+                // (Task 13), and unwinding across that `extern "system"` boundary is
+                // undefined behaviour. If `f` panics here, unwinding drops `dc_lock`
+                // (running `dc.EndDraw()`) and then `surface_lock` (running
+                // `surface.EndDraw()`) on the way out, so the surface is released instead
+                // of staying locked forever.
+                let dc_lock = DeviceContextDraw { dc: &dc, armed: true };
                 let drawn = f(&rt, (offset.x as f32, offset.y as f32));
-                let ended = dc.EndDraw(None, None);
+                let ended = dc_lock.end();
                 drawn?;
                 ended?;
                 Ok(())
             })();
 
-            surface.EndDraw()?;
+            surface_lock.end()?;
             result?;
             // Commit is skipped when the frame failed: leaving the last good frame on
             // screen beats publishing a half-drawn one.
@@ -253,5 +314,33 @@ mod tests {
 
         let r = c.draw(&mut s, 16, 16, |_, _| Ok(()));
         assert!(r.is_ok(), "surface stayed locked after a failing callback: {r:?}");
+    }
+
+    /// Companion to `surface_still_usable_after_a_failing_callback`, but for an unwinding
+    /// callback instead of one that merely returns `Err`. Without the `SurfaceLock` /
+    /// `DeviceContextDraw` guards, a panic inside `f` skips both `EndDraw` calls and the
+    /// surface is left locked forever.
+    ///
+    /// The process-wide panic hook is swapped for a silent one only for the duration of
+    /// this test's `catch_unwind` call and restored immediately after -- see the task
+    /// report for why that is safe under `cargo test`'s default parallel harness.
+    #[test]
+    fn surface_survives_a_panicking_callback() {
+        std::panic::set_hook(Box::new(|_| {}));
+
+        let p = Painter::new().unwrap();
+        let c = Compositor::new(p.d2d_factory()).unwrap();
+        let mut s = c.attach(hidden_window()).unwrap();
+
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            c.draw(&mut s, 16, 16, |_, _| panic!("boom"))
+        }));
+
+        let _ = std::panic::take_hook();
+
+        assert!(caught.is_err(), "the panicking callback did not panic");
+
+        let r = c.draw(&mut s, 16, 16, |_, _| Ok(()));
+        assert!(r.is_ok(), "surface stayed locked after a panicking callback: {r:?}");
     }
 }
