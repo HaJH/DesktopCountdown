@@ -11,5 +11,6 @@ pub mod monitors;
 pub mod paths;
 pub mod render;
 pub mod single_instance;
+pub mod tray;
 pub mod watch;
 pub mod workerw;

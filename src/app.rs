@@ -18,6 +18,7 @@ use crate::dcomp::{Compositor, Surface};
 use crate::layout::place;
 use crate::monitors::{self, MonitorInfo};
 use crate::render::{Lines, Painter};
+use crate::tray::{Tray, TrayCommand};
 use crate::watch::ConfigWatcher;
 use crate::workerw::{self, ChildWindow};
 
@@ -50,6 +51,7 @@ pub struct App {
     panels: Vec<Panel>,
     last_lines: Option<Lines>,
     ticks_since_health_check: u32,
+    tray: Tray,
 }
 
 impl App {
@@ -76,7 +78,9 @@ impl App {
             panels: Vec::new(),
             last_lines: None,
             ticks_since_health_check: 0,
+            tray: Tray::new()?,
         };
+        tracing::info!("tray icon created");
         app.rebuild_panels()?;
 
         // `app` must not move for as long as `hwnd` exists: `create_controller_window`
@@ -141,16 +145,34 @@ impl App {
                     }
                 }
                 self.last_lines = None; // force a redraw with the new style
+                let _ = self.tray.set_warning(false);
                 tracing::info!("config reloaded");
             }
             // Keeping the last valid config beats blanking the screen.
-            Err(e) => tracing::error!("config reload rejected, keeping previous: {e:#}"),
+            Err(e) => {
+                tracing::error!("config reload rejected, keeping previous: {e:#}");
+                let _ = self.tray.set_warning(true);
+            }
         }
     }
 
     /// Runs once per `WM_TIMER`: checks WorkerW health, computes the current
     /// countdown text, and redraws only when it changed since the last tick.
     fn tick(&mut self) -> Result<()> {
+        match self.tray.poll() {
+            Some(TrayCommand::Quit) => {
+                unsafe { PostQuitMessage(0) };
+                return Ok(());
+            }
+            Some(TrayCommand::Reload) => self.reload(),
+            Some(TrayCommand::OpenConfig) => {
+                if let Err(e) = std::process::Command::new("notepad.exe").arg(&self.cfg_path).spawn() {
+                    tracing::error!("opening the config failed: {e:#}");
+                }
+            }
+            None => {}
+        }
+
         if self.watcher.changed() {
             self.reload();
         }
