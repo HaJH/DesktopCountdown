@@ -2,6 +2,7 @@
 
 use crate::color::parse_hex;
 use crate::config::Anchor;
+use jiff::civil::DateTime;
 
 /// Config stores colours as `#RRGGBB`; egui's picker wants `[u8; 3]`.
 /// Invalid stored colours fall back to white rather than panicking.
@@ -45,6 +46,35 @@ pub fn cell_to_anchor(row: usize, col: usize) -> Anchor {
         (2, 2) => BottomRight,
         _ => Center, // (1,1) and any out-of-range
     }
+}
+
+/// The countdown target as six editable integers. egui has no date picker,
+/// so each field is a DragValue and this validates the combination.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DateFields {
+    pub year: i16,
+    pub month: i8,
+    pub day: i8,
+    pub hour: i8,
+    pub minute: i8,
+    pub second: i8,
+}
+
+pub fn fields_from_datetime(dt: DateTime) -> DateFields {
+    DateFields {
+        year: dt.year(),
+        month: dt.month(),
+        day: dt.day(),
+        hour: dt.hour(),
+        minute: dt.minute(),
+        second: dt.second(),
+    }
+}
+
+/// Returns `None` for an impossible date (Feb 30, month 13, hour 24, ...).
+/// `jiff::civil::DateTime::new` validates the whole combination including leap years.
+pub fn datetime_from_fields(f: &DateFields) -> Option<DateTime> {
+    DateTime::new(f.year, f.month, f.day, f.hour, f.minute, f.second, 0).ok()
 }
 
 /// The settings window saves 500 ms after the last edit, not on every frame.
@@ -115,5 +145,71 @@ mod tests {
         assert!(!should_save(true, 100, 500)); // dirty but too soon
         assert!(should_save(true, 500, 500)); // dirty and settled (boundary)
         assert!(should_save(true, 700, 500)); // dirty and settled
+    }
+
+    use jiff::civil::datetime;
+
+    #[test]
+    fn datetime_fields_round_trip() {
+        let dt = datetime(2026, 10, 24, 9, 30, 15, 0);
+        let f = fields_from_datetime(dt);
+        assert_eq!(
+            (f.year, f.month, f.day, f.hour, f.minute, f.second),
+            (2026, 10, 24, 9, 30, 15)
+        );
+        assert_eq!(datetime_from_fields(&f), Some(dt));
+    }
+
+    #[test]
+    fn invalid_dates_return_none() {
+        let feb30 = DateFields {
+            year: 2026,
+            month: 2,
+            day: 30,
+            hour: 0,
+            minute: 0,
+            second: 0,
+        };
+        assert_eq!(datetime_from_fields(&feb30), None);
+        let month13 = DateFields {
+            year: 2026,
+            month: 13,
+            day: 1,
+            hour: 0,
+            minute: 0,
+            second: 0,
+        };
+        assert_eq!(datetime_from_fields(&month13), None);
+        let hour24 = DateFields {
+            year: 2026,
+            month: 1,
+            day: 1,
+            hour: 24,
+            minute: 0,
+            second: 0,
+        };
+        assert_eq!(datetime_from_fields(&hour24), None);
+    }
+
+    #[test]
+    fn leap_day_is_valid_in_a_leap_year() {
+        let f = DateFields {
+            year: 2028,
+            month: 2,
+            day: 29,
+            hour: 12,
+            minute: 0,
+            second: 0,
+        };
+        assert!(datetime_from_fields(&f).is_some());
+        let f = DateFields {
+            year: 2026,
+            month: 2,
+            day: 29,
+            hour: 12,
+            minute: 0,
+            second: 0,
+        };
+        assert_eq!(datetime_from_fields(&f), None); // 2026 is not a leap year
     }
 }
