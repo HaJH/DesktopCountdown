@@ -15,6 +15,13 @@
 - 대상 OS Windows 10 1809+. Rust edition 2021, rustc 1.92+.
 - 추가 크레이트: `eframe = "0.35"` (egui 포함). `egui_extras`는 쓰지 않는다.
 - **eframe/egui 0.35의 정확한 API(`App` 트레이트 메서드 시그니처, 위젯 반환 타입, `run_native` 인자)는 이 문서의 코드와 다를 수 있다. 컴파일 에러가 나면 컴파일러가 요구하는 형태를 따른다. 로직을 바꾸지 않는 한 시그니처 조정은 계획 이탈이 아니다.** 같은 규칙이 `windows` 0.62에도 적용된다.
+- **이 egui 0.35의 확인된 API 사실(Task 1에서 실측):** `eframe::App`의 필수 메서드는
+  `fn update(..)`가 아니라 **`fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame)`**이다.
+  주어진 `ui`는 여백/배경이 없으므로 `egui::CentralPanel::default().show(ui, |ui| { .. })`로 감싼다.
+  이 버전에서 패널(`CentralPanel`/`TopBottomPanel`/`SidePanel`)의 `show(ui, ..)`는 **`&mut Ui`를
+  받는다**(구버전의 `&Context`가 아니다). `Context`가 필요하면 `ui.ctx()`로 얻는다(재도색은
+  `ui.ctx().request_repaint_after(..)`). 종료 시 flush는 `fn on_exit(&mut self)`를 오버라이드한다
+  (glow 비활성 시 인자 없음). 이 문서의 이후 코드는 이 API를 전제로 쓰였다.
 - 계획 1의 `config`(schema/io/merge/validate), `monitors::enumerate`, `paths::config_path`, `color::parse_hex`를 재사용한다. 이들 공개 API를 바꾸지 않는다.
 - 순수 헬퍼 모듈(`settings/widgets.rs`, `settings/overrides.rs`)에는 egui·Win32 의존을 넣지 않는다 — 그래야 `cargo test`로 UI 없이 검증된다.
 - 코드와 코드 주석은 영어. 커밋 메시지·README·UI 문자열은 한국어.
@@ -966,18 +973,18 @@ impl SettingsApp {
 ```
 
 `src/settings/mod.rs`의 `run()`에서 `SettingsApp::default()` 대신 `SettingsApp::new()?`를 쓰도록
-바꾸고, `SettingsApp`의 `Default` 파생을 제거한다. `eframe::App` 구현(update)은 이 태스크에서는
-Task 1의 스텁을 그대로 두되, `SettingsApp`에 옮긴다:
+바꾸고, `SettingsApp`의 `Default` 파생을 제거한다. `eframe::App` 구현은 Task 1의 스텁을
+`SettingsApp`으로 옮기되, **이 egui 0.35 API(`fn ui`, 패널 `show(ui)`, `ui.ctx()`)를 따른다:**
 
 ```rust
 impl eframe::App for SettingsApp {
-    fn update(&mut self, ctx: &eframe::egui::Context, _frame: &mut eframe::Frame) {
-        eframe::egui::CentralPanel::default().show(ctx, |ui| {
+    fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
+        eframe::egui::CentralPanel::default().show(ui, |ui| {
             ui.label("설정 창 (UI 구현 예정)");
         });
         let now = self.now_ms();
         self.save_if_due(now);
-        ctx.request_repaint_after(std::time::Duration::from_millis(200));
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(200));
     }
 }
 ```
@@ -1010,16 +1017,25 @@ git commit -m "설정 창: SettingsApp 상태와 디바운스 저장 로직
 - Consumes: `crate::settings::{widgets, overrides}`, `crate::config::{Anchor, DrawMode}`
 - Produces: 없음 (UI만)
 
-- [ ] **Step 1: `update`에 UI 구현**
+- [ ] **Step 1: `ui`에 UI 구현**
 
-`SettingsApp::update`를 채운다. 아래는 로직 골격이다. eframe/egui 0.35의 정확한 위젯 API는
-컴파일러를 따른다(예: `ui.add(egui::Slider::new(&mut v, range))`, `egui::ComboBox`,
-`ui.color_edit_button_srgb(&mut rgb)`, `egui::DragValue::new(&mut v)`).
+`SettingsApp::ui`(이 egui 0.35의 필수 메서드, `fn ui(&mut self, ui: &mut Ui, frame)`)를 채운다.
+아래는 로직 골격이다. 정확한 위젯 API는 컴파일러를 따른다(예:
+`ui.add(egui::Slider::new(&mut v, range))`, `egui::ComboBox`, `ui.color_edit_button_srgb(&mut rgb)`,
+`egui::DragValue::new(&mut v)`).
+
+이 egui 0.35에서 패널의 `show(ui, ..)`는 `&mut Ui`를 받는다. 주어진 최상위 `ui` 안에서 패널을
+배치한다:
 
 핵심 구조:
-1. 상단 `TopBottomPanel`: 편집 대상 ComboBox("전역 기본값" / 각 모니터 name).
-2. 우측 `SidePanel`: 근사 미리보기(어두운 배경 위에 두 줄 텍스트 + "정확한 표시는 바탕화면에서 확인").
-3. 중앙 `CentralPanel` 스크롤: 대상에 따른 컨트롤.
+1. 상단 `egui::TopBottomPanel::top("target").show_inside(ui, |ui| { .. })`: 편집 대상 ComboBox.
+2. 우측 `egui::SidePanel::right("preview").show_inside(ui, |ui| { .. })`: 근사 미리보기(어두운 배경
+   위 두 줄 텍스트 + "정확한 표시는 바탕화면에서 확인").
+3. `egui::CentralPanel::default().show_inside(ui, |ui| egui::ScrollArea::vertical().show(ui, |ui| { .. }))`:
+   대상에 따른 컨트롤.
+
+(패널을 `App::ui`가 준 `ui` 안에 넣을 때는 `show_inside(ui, ..)`를 쓴다. `show(ui, ..)`도 Ui를 받지만
+`show_inside`가 중첩 배치에 맞다 — 컴파일러/문서를 따라 맞는 쪽을 쓴다.)
 
 대상별 편집 규칙:
 - **전역:** `target`(6 DragValue), `[style]` 전체, `[layout]`, `[general].autostart`를 `self.cfg`에
@@ -1155,9 +1171,21 @@ pub fn run() -> Result<()> {
 
 - [ ] **Step 4: eframe App의 종료 시 flush**
 
-설정 창을 닫을 때 대기 중이던 저장을 flush해야 한다. eframe 0.35의 `App::on_exit`(또는 상응
-콜백)에서 `self.flush()`를 호출한다. 콜백 이름/시그니처는 컴파일러를 따른다. 없으면 `update`에서
-`ctx.input(|i| i.viewport().close_requested())`를 감지해 flush한다.
+설정 창을 닫을 때 대기 중이던 저장을 flush해야 한다. 이 egui 0.35는 `fn on_exit(&mut self)`
+(glow 비활성 시 인자 없음)를 제공한다. 오버라이드해서 `self.flush()`를 호출한다:
+
+```rust
+impl eframe::App for SettingsApp {
+    fn ui(&mut self, ui: &mut eframe::egui::Ui, frame: &mut eframe::Frame) { /* Task 7 */ }
+    fn on_exit(&mut self) {
+        self.flush();
+    }
+}
+```
+
+`on_exit`의 정확한 시그니처(glow feature 여부)는 컴파일러를 따른다. 만약 이 경로가 창 X 버튼
+닫기에서 안 불리면, `ui`에서 `ui.ctx().input(|i| i.viewport().close_requested())`를 감지해 flush하는
+방식으로 폴백한다.
 
 - [ ] **Step 5: 빌드·테스트·수동 확인**
 

@@ -56,3 +56,17 @@
 - `breakdown`의 `.expect()` 메시지가 "jiff 버그"라 단정 — 실 날짜 범위에서 도달 불가.
 - `pass()` 8인자 (`#[allow(clippy::too_many_arguments)]`) — 순수 미관.
 - 콜드 스타트 시 초 한 번 스킵 — 표시값은 항상 정확, 미관.
+
+## 설정 창 (계획 2) defer
+
+- **모니터 미리보기 merge 중복.** `settings/app.rs`의 `ui_monitor`가 12필드 인라인 `unwrap_or`
+  병합으로 유효 스타일을 계산하는데, 이는 `config::merge::effective_for`와 동일 로직. 향후 `Style`
+  필드 추가 시 두 곳을 수동 동기화해야 함. → 미리보기도 `effective_for`를 쓰도록 정리.
+
+- **로그 파일 프로세스 구분 불가.** 렌더러와 설정 창이 같은 log.txt에 append(안전, 손상 없음)하나
+  로그 포맷에 PID/프로세스 태그가 없어 두 프로세스 라인을 구분할 수 없음. → 포맷에 프로세스 태그 추가.
+- **enabled=Some(true) 단독 항목 미정리.** 모니터를 껐다 켜서 `enabled=Some(true)`만 남은 `[[display]]`
+  항목은 전역과 같아도 prune되지 않음. `effective_for`가 동일 취급하므로 무해(파일이 약간 비최소).
+- **설정 저장 실패 재시도 빈도.** validate/디스크 오류로 write 실패 시 dirty 유지 → save_if_due가
+  ~200ms(5Hz)마다 재시도. validate 실패는 위젯 range 클램프로 사실상 도달 불가, 디스크 오류만 트리거.
+  무해하나 조밀. → 실패 시 백오프.

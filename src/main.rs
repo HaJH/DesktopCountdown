@@ -7,6 +7,13 @@ use windows::Win32::UI::HiDpi::{
 };
 
 fn main() -> Result<()> {
+    if std::env::args().any(|a| a == "--settings") {
+        // The settings window is a plain GUI process: no DPI-per-monitor setup,
+        // no renderer mutex, no WorkerW. It only edits config.toml.
+        let _guard = logging::init(&paths::log_dir()?);
+        return desktop_countdown::settings::run();
+    }
+
     // Must happen before any window or monitor query.
     unsafe { SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)? };
 

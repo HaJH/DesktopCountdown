@@ -23,12 +23,21 @@ pub fn load_or_create(path: &Path) -> Result<Config> {
     Ok(cfg)
 }
 
+/// Writes the config atomically: a plain `fs::write` truncates the file to zero bytes before
+/// re-filling it, and the renderer watches this file — a read landing in that window would parse
+/// the empty file as `Config::default()` and reset the display. Writing a temp file and renaming
+/// it over the target is atomic on the same NTFS volume, so a reader always sees either the old
+/// or the new complete file.
 pub fn save(path: &Path, cfg: &Config) -> Result<()> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let text = toml::to_string_pretty(cfg)?;
-    std::fs::write(path, text).with_context(|| format!("writing {}", path.display()))?;
+
+    let tmp = path.with_extension("toml.tmp");
+    std::fs::write(&tmp, text).with_context(|| format!("writing {}", tmp.display()))?;
+    std::fs::rename(&tmp, path)
+        .with_context(|| format!("replacing {} with {}", path.display(), tmp.display()))?;
     Ok(())
 }
 

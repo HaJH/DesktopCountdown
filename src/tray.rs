@@ -43,7 +43,7 @@ pub struct Tray {
 
 impl Tray {
     pub fn new() -> Result<Self> {
-        let open = MenuItem::new("설정 파일 열기", true, None);
+        let open = MenuItem::new("설정 열기", true, None);
         let reload = MenuItem::new("다시 불러오기", true, None);
         let quit = MenuItem::new("종료", true, None);
 

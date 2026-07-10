@@ -191,14 +191,14 @@ impl App {
                 return Ok(());
             }
             Some(TrayCommand::Reload) => self.reload(),
-            Some(TrayCommand::OpenConfig) => {
-                if let Err(e) = std::process::Command::new("notepad.exe")
-                    .arg(&self.cfg_path)
-                    .spawn()
-                {
-                    tracing::error!("opening the config failed: {e:#}");
+            Some(TrayCommand::OpenConfig) => match std::env::current_exe() {
+                Ok(exe) => {
+                    if let Err(e) = std::process::Command::new(exe).arg("--settings").spawn() {
+                        tracing::error!("opening the settings window failed: {e:#}");
+                    }
                 }
-            }
+                Err(e) => tracing::error!("current_exe failed: {e:#}"),
+            },
             None => {}
         }
 
