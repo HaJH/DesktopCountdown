@@ -87,8 +87,15 @@ OpenType `tnum`(tabular figures)을 기본 활성화해 방지한다. 폰트가 
 
 - `wallpaper_window` — Progman에 `0x052C`를 보내 WorkerW를 확보하고, `SHELLDLL_DefView` 자식이 없는
   쪽을 골라 우리 창을 `SetParent`한다. 부모가 살아있는지 감시하다 사라지면 재부착한다.
-- `render` — Direct2D DC 렌더 타깃 + DirectWrite. 그리기 방식 3종(`fill` / `outline` / `both`),
-  그림자, 자간을 처리한다. 아웃라인은 글리프 런에서 지오메트리를 뽑아 stroke한다.
+- `render` — Direct2D WIC 비트맵 렌더 타깃 + DirectWrite. 그리기 방식 3종(`fill` / `outline` / `both`),
+  그림자, 자간을 처리하고 프리멀티플라이드 BGRA 픽셀 버퍼를 내놓는다. 아웃라인은 커스텀
+  `IDWriteTextRenderer`로 글리프 런을 받아 `GetGlyphRunOutline`으로 지오메트리를 뽑아 stroke한다.
+
+  텍스트 안티에일리어싱은 반드시 `D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE`로 둔다. 기본값인 ClearType은
+  서브픽셀 렌더링이라 알파 채널이 망가져 레이어드 창에서 색 번짐이 생긴다.
+
+  그림자는 블러 없는 오프셋 그림자다(같은 글자를 (2,2)만큼 옮겨 검정 반투명으로 먼저 그린다).
+  가우시안 블러는 `ID2D1DeviceContext`의 이펙트 파이프라인이 필요해 1차 버전 범위 밖이다.
 - `monitors` — 모니터 열거, 안정적인 디바이스 ID 조회, DPI.
 - `tray` — 트레이 아이콘과 메뉴(설정 / 다시 불러오기 / 종료).
 - `autostart` — `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` 등록/해제.
@@ -148,7 +155,10 @@ size_px = 48
 ### 4.1 모니터 식별
 
 `\\.\DISPLAY1` 같은 이름은 케이블을 바꿔 꽂거나 모니터를 껐다 켜면 뒤바뀐다. 대신
-`QueryDisplayConfig`로 얻는 안정적인 디바이스 ID를 키로 쓰고, 사람이 읽을 이름은 `name`에 따로 저장한다.
+`EnumDisplayDevicesW`를 `EDD_GET_DEVICE_INTERFACE_NAME`으로 호출해 얻는 디바이스 인터페이스 이름
+(`\\?\DISPLAY#DEL41A8#...`)을 키로 쓰고, 사람이 읽을 이름은 `name`에 따로 저장한다.
+
+`name`은 표시 전용이며 식별에 쓰지 않는다. 1차 버전에서는 `\\.\DISPLAY1 (2560×1440)` 형태로 생성한다.
 
 설정 파일에 없는 모니터가 새로 연결되면 전역 기본값으로 표시한다(`enabled` 기본값은 `true`).
 
