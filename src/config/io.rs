@@ -62,7 +62,11 @@ mod tests {
     #[test]
     fn reads_existing_file() {
         let p = tmp("read");
-        fs::write(&p, "target = \"2030-01-01T00:00:00\"\n[style]\nsize_px = 99.0\n").unwrap();
+        fs::write(
+            &p,
+            "target = \"2030-01-01T00:00:00\"\n[style]\nsize_px = 99.0\n",
+        )
+        .unwrap();
         let cfg = load_or_create(&p).unwrap();
         assert_eq!(cfg.style.size_px, 99.0);
     }
@@ -70,7 +74,11 @@ mod tests {
     #[test]
     fn rejects_invalid_values() {
         let p = tmp("invalid");
-        fs::write(&p, "target = \"2030-01-01T00:00:00\"\n[style]\nopacity = 3.0\n").unwrap();
+        fs::write(
+            &p,
+            "target = \"2030-01-01T00:00:00\"\n[style]\nopacity = 3.0\n",
+        )
+        .unwrap();
         assert!(load_or_create(&p).is_err());
     }
 

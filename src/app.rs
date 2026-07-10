@@ -135,7 +135,11 @@ impl App {
             }
             let window = ChildWindow::create(self.workerw)?;
             let surface = self.compositor.attach(window.hwnd())?;
-            self.panels.push(Panel { monitor: m, window, surface });
+            self.panels.push(Panel {
+                monitor: m,
+                window,
+                surface,
+            });
         }
         tracing::info!(count = self.panels.len(), "panels built");
         Ok(())
@@ -188,7 +192,10 @@ impl App {
             }
             Some(TrayCommand::Reload) => self.reload(),
             Some(TrayCommand::OpenConfig) => {
-                if let Err(e) = std::process::Command::new("notepad.exe").arg(&self.cfg_path).spawn() {
+                if let Err(e) = std::process::Command::new("notepad.exe")
+                    .arg(&self.cfg_path)
+                    .spawn()
+                {
                     tracing::error!("opening the config failed: {e:#}");
                 }
             }
@@ -220,8 +227,9 @@ impl App {
                     return match self.workerw_backoff.next_delay_ms() {
                         Some(ms) => {
                             tracing::warn!("WorkerW not available ({e:#}), retrying in {ms}ms");
-                            self.retry_at =
-                                Some(std::time::Instant::now() + std::time::Duration::from_millis(ms));
+                            self.retry_at = Some(
+                                std::time::Instant::now() + std::time::Duration::from_millis(ms),
+                            );
                             Ok(())
                         }
                         None => {
@@ -278,7 +286,13 @@ impl App {
         for p in &mut self.panels {
             let eff = effective_for(cfg, &p.monitor.id);
             let (w, h) = painter.measure(lines, &eff.style)?;
-            let rect = place(p.monitor.rect, w as i32, h as i32, eff.anchor, eff.offset_px);
+            let rect = place(
+                p.monitor.rect,
+                w as i32,
+                h as i32,
+                eff.anchor,
+                eff.offset_px,
+            );
 
             p.window.place(workerw, rect)?;
             // Another wallpaper app may have inserted itself above us since last tick.
@@ -382,14 +396,16 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     // lower-level Direct2D/DirectComposition locks are released correctly on
     // unwind, so nothing there is left corrupted; the only cost of proceeding is a
     // possibly-stale next frame, and we log loudly so it is never silent.
-    let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
-        handle_message(app, hwnd, msg, wp, lp)
-    }));
+    let outcome =
+        std::panic::catch_unwind(AssertUnwindSafe(|| handle_message(app, hwnd, msg, wp, lp)));
 
     match outcome {
         Ok(lresult) => lresult,
         Err(payload) => {
-            tracing::error!(message = panic_message(&*payload), "panic in wndproc, message dropped");
+            tracing::error!(
+                message = panic_message(&*payload),
+                "panic in wndproc, message dropped"
+            );
             // Do not call DefWindowProcW here: `App` may be half-updated, and
             // DefWindowProcW's default handling is not meaningful for our custom
             // messages (WM_TIMER/WM_DISPLAYCHANGE/WM_DPICHANGED) anyway. Swallowing
@@ -478,7 +494,10 @@ mod tests {
             panic!("simulated panic inside a message handler");
         }));
 
-        assert!(outcome.is_err(), "the simulated panic should have been caught, not propagated");
+        assert!(
+            outcome.is_err(),
+            "the simulated panic should have been caught, not propagated"
+        );
         // The message loop (this test function) is still running -- proof that a
         // caught panic does not unwind past the `catch_unwind` boundary. `App`
         // itself may be left mid-update (here, `ticks` was bumped before the

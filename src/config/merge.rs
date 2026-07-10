@@ -25,22 +25,52 @@ pub fn effective_for(cfg: &Config, monitor_id: &str) -> Effective {
         return e;
     };
 
-    if let Some(v) = o.enabled { e.enabled = v; }
-    if let Some(v) = o.anchor { e.anchor = v; }
-    if let Some(v) = o.offset_px { e.offset_px = v; }
+    if let Some(v) = o.enabled {
+        e.enabled = v;
+    }
+    if let Some(v) = o.anchor {
+        e.anchor = v;
+    }
+    if let Some(v) = o.offset_px {
+        e.offset_px = v;
+    }
 
-    if let Some(v) = &o.font_family { e.style.font_family = v.clone(); }
-    if let Some(v) = o.font_weight { e.style.font_weight = v; }
-    if let Some(v) = o.size_px { e.style.size_px = v; }
-    if let Some(v) = o.mode { e.style.mode = v; }
-    if let Some(v) = &o.color { e.style.color = v.clone(); }
-    if let Some(v) = &o.outline_color { e.style.outline_color = v.clone(); }
-    if let Some(v) = o.outline_width_px { e.style.outline_width_px = v; }
-    if let Some(v) = o.opacity { e.style.opacity = v; }
-    if let Some(v) = o.letter_spacing_em { e.style.letter_spacing_em = v; }
-    if let Some(v) = o.shadow { e.style.shadow = v; }
-    if let Some(v) = o.tabular_figures { e.style.tabular_figures = v; }
-    if let Some(v) = o.show_summary_line { e.style.show_summary_line = v; }
+    if let Some(v) = &o.font_family {
+        e.style.font_family = v.clone();
+    }
+    if let Some(v) = o.font_weight {
+        e.style.font_weight = v;
+    }
+    if let Some(v) = o.size_px {
+        e.style.size_px = v;
+    }
+    if let Some(v) = o.mode {
+        e.style.mode = v;
+    }
+    if let Some(v) = &o.color {
+        e.style.color = v.clone();
+    }
+    if let Some(v) = &o.outline_color {
+        e.style.outline_color = v.clone();
+    }
+    if let Some(v) = o.outline_width_px {
+        e.style.outline_width_px = v;
+    }
+    if let Some(v) = o.opacity {
+        e.style.opacity = v;
+    }
+    if let Some(v) = o.letter_spacing_em {
+        e.style.letter_spacing_em = v;
+    }
+    if let Some(v) = o.shadow {
+        e.style.shadow = v;
+    }
+    if let Some(v) = o.tabular_figures {
+        e.style.tabular_figures = v;
+    }
+    if let Some(v) = o.show_summary_line {
+        e.style.show_summary_line = v;
+    }
 
     e
 }
@@ -51,7 +81,10 @@ mod tests {
     use crate::config::{Anchor, Config, DisplayOverride, DrawMode};
 
     fn cfg_with(over: Vec<DisplayOverride>) -> Config {
-        Config { displays: over, ..Config::default() }
+        Config {
+            displays: over,
+            ..Config::default()
+        }
     }
 
     #[test]
@@ -139,8 +172,16 @@ mod tests {
     #[test]
     fn first_matching_override_wins() {
         let cfg = cfg_with(vec![
-            DisplayOverride { id: "MON-A".into(), size_px: Some(10.0), ..Default::default() },
-            DisplayOverride { id: "MON-A".into(), size_px: Some(20.0), ..Default::default() },
+            DisplayOverride {
+                id: "MON-A".into(),
+                size_px: Some(10.0),
+                ..Default::default()
+            },
+            DisplayOverride {
+                id: "MON-A".into(),
+                size_px: Some(20.0),
+                ..Default::default()
+            },
         ]);
         assert_eq!(effective_for(&cfg, "MON-A").style.size_px, 10.0);
     }

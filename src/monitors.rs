@@ -37,7 +37,12 @@ pub fn enumerate() -> Result<Vec<MonitorInfo>> {
     Ok(SINK.with(|s| s.borrow().clone()))
 }
 
-unsafe extern "system" fn monitor_cb(hmon: HMONITOR, _hdc: HDC, _rc: *mut RECT, _lp: LPARAM) -> BOOL {
+unsafe extern "system" fn monitor_cb(
+    hmon: HMONITOR,
+    _hdc: HDC,
+    _rc: *mut RECT,
+    _lp: LPARAM,
+) -> BOOL {
     if let Some(info) = describe(hmon) {
         SINK.with(|s| s.borrow_mut().push(info));
     }
@@ -47,18 +52,28 @@ unsafe extern "system" fn monitor_cb(hmon: HMONITOR, _hdc: HDC, _rc: *mut RECT, 
 unsafe fn describe(hmon: HMONITOR) -> Option<MonitorInfo> {
     let mut mi = MONITORINFOEXW::default();
     mi.monitorInfo.cbSize = size_of::<MONITORINFOEXW>() as u32;
-    GetMonitorInfoW(hmon, &mut mi.monitorInfo as *mut _).ok().ok()?;
+    GetMonitorInfoW(hmon, &mut mi.monitorInfo as *mut _)
+        .ok()
+        .ok()?;
 
     let device = wide_to_string(&mi.szDevice);
     let r = mi.monitorInfo.rcMonitor;
-    let rect = Rect { x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top };
+    let rect = Rect {
+        x: r.left,
+        y: r.top,
+        w: r.right - r.left,
+        h: r.bottom - r.top,
+    };
 
     let mut dpi_x = 96u32;
     let mut dpi_y = 96u32;
     let _ = GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y);
 
     // The device interface name survives reboots and port changes; szDevice does not.
-    let mut dd = DISPLAY_DEVICEW { cb: size_of::<DISPLAY_DEVICEW>() as u32, ..Default::default() };
+    let mut dd = DISPLAY_DEVICEW {
+        cb: size_of::<DISPLAY_DEVICEW>() as u32,
+        ..Default::default()
+    };
     let device_wide: Vec<u16> = mi.szDevice.to_vec();
     let ok = EnumDisplayDevicesW(
         windows::core::PCWSTR(device_wide.as_ptr()),

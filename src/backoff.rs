@@ -11,7 +11,13 @@ pub struct Backoff {
 
 impl Backoff {
     pub fn new(base_ms: u64, cap_ms: u64, give_up_after_ms: u64) -> Self {
-        Self { base_ms, cap_ms, give_up_after_ms, next_ms: base_ms, elapsed_ms: 0 }
+        Self {
+            base_ms,
+            cap_ms,
+            give_up_after_ms,
+            next_ms: base_ms,
+            elapsed_ms: 0,
+        }
     }
 
     /// `None` means the caller should stop retrying.

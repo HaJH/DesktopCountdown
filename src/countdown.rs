@@ -72,7 +72,11 @@ pub fn format_summary(b: &Breakdown) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jiff::{civil::datetime, tz::{offset, TimeZone}, Zoned};
+    use jiff::{
+        civil::datetime,
+        tz::{offset, TimeZone},
+        Zoned,
+    };
 
     fn z(y: i16, m: i8, d: i8, h: i8, mi: i8, s: i8) -> Zoned {
         datetime(y, m, d, h, mi, s, 0)
@@ -182,9 +186,7 @@ mod tests {
         let seoul = TimeZone::get("Asia/Seoul").expect("bundled tzdb has Asia/Seoul");
         let now_fixed = z(2026, 7, 10, 23, 30, 0);
         let target_fixed = z(2026, 10, 24, 9, 0, 0);
-        let target_seoul = datetime(2026, 10, 24, 9, 0, 0, 0)
-            .to_zoned(seoul)
-            .unwrap();
+        let target_seoul = datetime(2026, 10, 24, 9, 0, 0, 0).to_zoned(seoul).unwrap();
 
         let b = breakdown(&now_fixed, &target_seoul);
 

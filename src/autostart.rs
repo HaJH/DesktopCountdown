@@ -48,7 +48,11 @@ pub fn set_enabled(on: bool) -> Result<()> {
     } else {
         let status = unsafe { RegDeleteValueW(key, VALUE_NAME) };
         // Deleting an absent value is success from the caller's point of view.
-        if status == ERROR_FILE_NOT_FOUND { Ok(()) } else { status.ok() }
+        if status == ERROR_FILE_NOT_FOUND {
+            Ok(())
+        } else {
+            status.ok()
+        }
     };
     unsafe {
         let _ = RegCloseKey(key);

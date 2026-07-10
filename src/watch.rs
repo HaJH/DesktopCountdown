@@ -28,20 +28,27 @@ impl ConfigWatcher {
         let (tx, rx) = channel();
         let file_name = path.file_name().map(|s| s.to_owned());
 
-        let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-            let Ok(event) = res else { return };
-            let touches_config =
-                event.paths.iter().any(|p| p.file_name().map(|s| s.to_owned()) == file_name);
-            if touches_config {
-                let _ = tx.send(());
-            }
-        })?;
+        let mut watcher =
+            notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                let Ok(event) = res else { return };
+                let touches_config = event
+                    .paths
+                    .iter()
+                    .any(|p| p.file_name().map(|s| s.to_owned()) == file_name);
+                if touches_config {
+                    let _ = tx.send(());
+                }
+            })?;
 
         // Watch the directory, not the file: editors replace the inode on save.
         let dir = path.parent().unwrap_or(Path::new("."));
         watcher.watch(dir, RecursiveMode::NonRecursive)?;
 
-        Ok(Self { _watcher: watcher, rx, pending_since: None })
+        Ok(Self {
+            _watcher: watcher,
+            rx,
+            pending_since: None,
+        })
     }
 
     /// Call this every tick. Returns `true` exactly once per settled change.

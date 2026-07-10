@@ -59,13 +59,23 @@ pub(crate) fn acquire_with_strategy() -> Result<(HWND, Strategy)> {
         }
         for (wp, lp) in [(0usize, 0isize), (0xD, 0x1), (0xD, 0x0)] {
             let mut res = 0usize;
-            SendMessageTimeoutW(progman, 0x052C, WPARAM(wp), LPARAM(lp), SMTO_NORMAL, 1000, Some(&mut res));
+            SendMessageTimeoutW(
+                progman,
+                0x052C,
+                WPARAM(wp),
+                LPARAM(lp),
+                SMTO_NORMAL,
+                1000,
+                Some(&mut res),
+            );
             if let Some(found) = lookup(progman) {
                 tracing::info!(strategy = found.1.label(), hwnd = ?found.0, "found wallpaper WorkerW after 0x052C");
                 return Ok(found);
             }
         }
-        Err(anyhow!("no WorkerW found by either strategy, even after 0x052C"))
+        Err(anyhow!(
+            "no WorkerW found by either strategy, even after 0x052C"
+        ))
     }
 }
 
@@ -129,8 +139,14 @@ impl ChildWindow {
                 CHILD_CLASS,
                 PCWSTR::null(),
                 WS_POPUP,
-                0, 0, 1, 1,
-                None, None, Some(hinst.into()), None,
+                0,
+                0,
+                1,
+                1,
+                None,
+                None,
+                Some(hinst.into()),
+                None,
             )?;
             SetParent(hwnd, Some(parent))?;
             // SetParent does not adjust the style; a reparented window must be WS_CHILD.
@@ -148,12 +164,18 @@ impl ChildWindow {
     /// `rect` is in virtual-desktop screen coordinates.
     pub fn place(&self, parent: HWND, rect: Rect) -> Result<()> {
         unsafe {
-            let mut o = POINT { x: rect.x, y: rect.y };
+            let mut o = POINT {
+                x: rect.x,
+                y: rect.y,
+            };
             ScreenToClient(parent, &mut o).ok()?;
             SetWindowPos(
                 self.hwnd,
                 Some(HWND_TOP),
-                o.x, o.y, rect.w, rect.h,
+                o.x,
+                o.y,
+                rect.w,
+                rect.h,
                 SWP_NOACTIVATE | SWP_FRAMECHANGED,
             )?;
         }
@@ -168,7 +190,10 @@ impl ChildWindow {
                 let _ = SetWindowPos(
                     self.hwnd,
                     Some(HWND_TOP),
-                    0, 0, 0, 0,
+                    0,
+                    0,
+                    0,
+                    0,
                     SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
                 );
             }
@@ -208,7 +233,17 @@ mod tests {
 
         let parent = acquire().unwrap();
         let child = ChildWindow::create(parent).unwrap();
-        child.place(parent, Rect { x: 120, y: 140, w: 300, h: 80 }).unwrap();
+        child
+            .place(
+                parent,
+                Rect {
+                    x: 120,
+                    y: 140,
+                    w: 300,
+                    h: 80,
+                },
+            )
+            .unwrap();
 
         // GetWindowRect reports screen coordinates even for a child window.
         let mut r = RECT::default();

@@ -26,12 +26,26 @@ mod tests {
 
     #[test]
     fn parses_with_hash() {
-        assert_eq!(parse_hex("#FFFFFF"), Some(Rgb { r: 255, g: 255, b: 255 }));
+        assert_eq!(
+            parse_hex("#FFFFFF"),
+            Some(Rgb {
+                r: 255,
+                g: 255,
+                b: 255
+            })
+        );
     }
 
     #[test]
     fn parses_without_hash() {
-        assert_eq!(parse_hex("1A2B3C"), Some(Rgb { r: 0x1A, g: 0x2B, b: 0x3C }));
+        assert_eq!(
+            parse_hex("1A2B3C"),
+            Some(Rgb {
+                r: 0x1A,
+                g: 0x2B,
+                b: 0x3C
+            })
+        );
     }
 
     #[test]

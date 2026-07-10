@@ -22,13 +22,20 @@ impl TextEngine {
     fn family_exists(&self, family: &str) -> bool {
         unsafe {
             let mut coll = None;
-            if self.factory.GetSystemFontCollection(&mut coll, false).is_err() {
+            if self
+                .factory
+                .GetSystemFontCollection(&mut coll, false)
+                .is_err()
+            {
                 return false;
             }
             let Some(coll) = coll else { return false };
             let mut index = 0u32;
             let mut exists = windows::core::BOOL(0);
-            if coll.FindFamilyName(&HSTRING::from(family), &mut index, &mut exists).is_err() {
+            if coll
+                .FindFamilyName(&HSTRING::from(family), &mut index, &mut exists)
+                .is_err()
+            {
                 return false;
             }
             exists.as_bool()
@@ -50,7 +57,13 @@ impl TextEngine {
     }
 
     /// A single-line layout. `size_px` is the em size in physical pixels.
-    pub fn layout(&self, text: &str, family: &str, style: &Style, size_px: f32) -> Result<IDWriteTextLayout> {
+    pub fn layout(
+        &self,
+        text: &str,
+        family: &str,
+        style: &Style,
+        size_px: f32,
+    ) -> Result<IDWriteTextLayout> {
         let utf16: Vec<u16> = text.encode_utf16().collect();
         unsafe {
             let format = self.factory.CreateTextFormat(
@@ -62,8 +75,13 @@ impl TextEngine {
                 size_px,
                 &HSTRING::from("ko-kr"),
             )?;
-            let layout = self.factory.CreateTextLayout(&utf16, &format, 8192.0, 8192.0)?;
-            let range = DWRITE_TEXT_RANGE { startPosition: 0, length: utf16.len() as u32 };
+            let layout = self
+                .factory
+                .CreateTextLayout(&utf16, &format, 8192.0, 8192.0)?;
+            let range = DWRITE_TEXT_RANGE {
+                startPosition: 0,
+                length: utf16.len() as u32,
+            };
 
             if style.letter_spacing_em != 0.0 {
                 let l1: IDWriteTextLayout1 = layout.cast()?;

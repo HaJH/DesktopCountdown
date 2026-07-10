@@ -20,7 +20,7 @@ cargo build --release
 
 ## 동작 방식
 
-바탕화면 아이콘을 그리는 `WorkerW` 창을 찾아 그 자식 창을 만들고, DirectComposition으로 픽셀별
+데스크톱 아이콘 아래에서 벽지를 그리는 `WorkerW` 창을 찾아 그 자식 창을 만들고, DirectComposition으로 픽셀별
 알파를 가진 비주얼을 그 위에 얹어 그립니다. `UpdateLayeredWindow`는 자식 창에서 `Ok`를 반환하면서도
 아무것도 그리지 않는다는 것을 스파이크에서 확인했기 때문에 DirectComposition을 씁니다(자세한 내용은
 `docs/superpowers/plans/spike-result.md`). 이 창은 데스크톱 아이콘 아래, 다른 배경 앱(Wallpaper

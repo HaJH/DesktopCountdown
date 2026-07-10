@@ -49,7 +49,10 @@ impl Painter {
     pub fn new() -> Result<Self> {
         let d2d: ID2D1Factory1 =
             unsafe { D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)? };
-        Ok(Self { d2d, text: TextEngine::new()? })
+        Ok(Self {
+            d2d,
+            text: TextEngine::new()?,
+        })
     }
 
     /// Needed by `dcomp` to build a D2D device, and by tests to build a WIC target.
@@ -65,25 +68,34 @@ impl Painter {
     fn compose(&self, lines: &Lines, style: &Style) -> Result<Composed> {
         let family = self.text.resolve_family(&style.font_family);
 
-        let main = self.text.layout(&lines.main, &family, style, style.size_px)?;
+        let main = self
+            .text
+            .layout(&lines.main, &family, style, style.size_px)?;
         let (main_w, main_h) = TextEngine::measure(&main)?;
 
         let summary = match (&lines.summary, style.show_summary_line) {
             (Some(s), true) => {
-                let l = self.text.layout(s, &family, style, style.size_px * SUMMARY_RATIO)?;
+                let l = self
+                    .text
+                    .layout(s, &family, style, style.size_px * SUMMARY_RATIO)?;
                 let (w, h) = TextEngine::measure(&l)?;
                 Some((l, w, h))
             }
             _ => None,
         };
 
-        let gap = if summary.is_some() { style.size_px * LINE_GAP_RATIO } else { 0.0 };
+        let gap = if summary.is_some() {
+            style.size_px * LINE_GAP_RATIO
+        } else {
+            0.0
+        };
         let sum_w = summary.as_ref().map(|s| s.1).unwrap_or(0.0);
         let sum_h = summary.as_ref().map(|s| s.2).unwrap_or(0.0);
 
-        let pad = (style.outline_width_px.max(0.0) + 4.0
+        let pad = (style.outline_width_px.max(0.0)
+            + 4.0
             + if style.shadow { SHADOW_OFFSET } else { 0.0 })
-            .ceil();
+        .ceil();
 
         let content_w = main_w.max(sum_w);
         let content_h = sum_h + gap + main_h;
@@ -125,7 +137,12 @@ impl Painter {
                 bottom: oy + c.height as f32,
             };
             rt.PushAxisAlignedClip(&clip, D2D1_ANTIALIAS_MODE_ALIASED);
-            rt.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
+            rt.Clear(Some(&D2D1_COLOR_F {
+                r: 0.0,
+                g: 0.0,
+                b: 0.0,
+                a: 0.0,
+            }));
 
             let result = self.paint_inner(rt, &c, style, ox, oy, alpha);
 
@@ -197,9 +214,22 @@ impl Painter {
         if matches!(style.mode, DrawMode::Fill | DrawMode::Both) {
             unsafe {
                 if let Some((l, _, _)) = &c.summary {
-                    rt.DrawTextLayout(Vector2 { X: sum_x, Y: sum_y }, l, fill, D2D1_DRAW_TEXT_OPTIONS_NONE);
+                    rt.DrawTextLayout(
+                        Vector2 { X: sum_x, Y: sum_y },
+                        l,
+                        fill,
+                        D2D1_DRAW_TEXT_OPTIONS_NONE,
+                    );
                 }
-                rt.DrawTextLayout(Vector2 { X: main_x, Y: main_y }, &c.main, fill, D2D1_DRAW_TEXT_OPTIONS_NONE);
+                rt.DrawTextLayout(
+                    Vector2 {
+                        X: main_x,
+                        Y: main_y,
+                    },
+                    &c.main,
+                    fill,
+                    D2D1_DRAW_TEXT_OPTIONS_NONE,
+                );
             }
         }
         if matches!(style.mode, DrawMode::Outline | DrawMode::Both) {
@@ -244,7 +274,9 @@ impl Painter {
 mod tests {
     use super::*;
     use crate::config::Style;
-    use windows::Win32::Graphics::Direct2D::Common::{D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT};
+    use windows::Win32::Graphics::Direct2D::Common::{
+        D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT,
+    };
     use windows::Win32::Graphics::Direct2D::{
         ID2D1RenderTarget, D2D1_FEATURE_LEVEL_DEFAULT, D2D1_RENDER_TARGET_PROPERTIES,
         D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE,
@@ -275,7 +307,10 @@ mod tests {
                 usage: D2D1_RENDER_TARGET_USAGE_NONE,
                 minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
             };
-            let rt = p.d2d_factory().CreateWicBitmapRenderTarget(&bitmap, &props).unwrap();
+            let rt = p
+                .d2d_factory()
+                .CreateWicBitmapRenderTarget(&bitmap, &props)
+                .unwrap();
             (bitmap, rt)
         }
     }
@@ -289,7 +324,12 @@ mod tests {
             p.paint(&rt, lines, style, (0.0, 0.0)).unwrap();
             rt.EndDraw(None, None).unwrap();
 
-            let rect = WICRect { X: 0, Y: 0, Width: w as i32, Height: h as i32 };
+            let rect = WICRect {
+                X: 0,
+                Y: 0,
+                Width: w as i32,
+                Height: h as i32,
+            };
             let lock = bitmap.Lock(&rect, WICBitmapLockRead.0 as u32).unwrap();
             let stride = lock.GetStride().unwrap();
             let mut size = 0u32;
@@ -310,7 +350,10 @@ mod tests {
     }
 
     fn lines() -> Lines {
-        Lines { summary: Some("3m 2w 0d".into()), main: "2544:18:07".into() }
+        Lines {
+            summary: Some("3m 2w 0d".into()),
+            main: "2544:18:07".into(),
+        }
     }
 
     fn coverage(px: &[u8], w: u32, h: u32) -> f64 {
@@ -348,7 +391,10 @@ mod tests {
         let (px, w, h) = draw(&p, &lines(), &Style::default());
         let (x0, y0, x1, y1) = ink_bbox(&px, w, h);
         assert!(x0 >= 1 && y0 >= 1, "ink touches the top-left edge");
-        assert!(x1 < w - 1 && y1 < h - 1, "ink touches the bottom-right edge");
+        assert!(
+            x1 < w - 1 && y1 < h - 1,
+            "ink touches the bottom-right edge"
+        );
     }
 
     #[test]
@@ -375,7 +421,13 @@ mod tests {
         let p = Painter::new().unwrap();
         let tall = p.measure(&lines(), &Style::default()).unwrap();
         let short = p
-            .measure(&Lines { summary: None, main: "2544:18:07".into() }, &Style::default())
+            .measure(
+                &Lines {
+                    summary: None,
+                    main: "2544:18:07".into(),
+                },
+                &Style::default(),
+            )
             .unwrap();
         assert!(short.1 < tall.1);
     }
@@ -383,15 +435,34 @@ mod tests {
     #[test]
     fn bigger_font_yields_a_bigger_canvas() {
         let p = Painter::new().unwrap();
-        let small = p.measure(&lines(), &Style { size_px: 32.0, ..Style::default() }).unwrap();
-        let big = p.measure(&lines(), &Style { size_px: 96.0, ..Style::default() }).unwrap();
+        let small = p
+            .measure(
+                &lines(),
+                &Style {
+                    size_px: 32.0,
+                    ..Style::default()
+                },
+            )
+            .unwrap();
+        let big = p
+            .measure(
+                &lines(),
+                &Style {
+                    size_px: 96.0,
+                    ..Style::default()
+                },
+            )
+            .unwrap();
         assert!(big.0 > small.0 && big.1 > small.1);
     }
 
     #[test]
     fn missing_font_falls_back_instead_of_failing() {
         let p = Painter::new().unwrap();
-        let style = Style { font_family: "NoSuchFontFamily12345".into(), ..Style::default() };
+        let style = Style {
+            font_family: "NoSuchFontFamily12345".into(),
+            ..Style::default()
+        };
         let (px, w, h) = draw(&p, &lines(), &style);
         assert!(coverage(&px, w, h) > 0.01);
     }
@@ -399,38 +470,101 @@ mod tests {
     #[test]
     fn shadow_adds_ink() {
         let p = Painter::new().unwrap();
-        let (a, w1, h1) = draw(&p, &lines(), &Style { shadow: false, ..Style::default() });
-        let (b, w2, h2) = draw(&p, &lines(), &Style { shadow: true, ..Style::default() });
+        let (a, w1, h1) = draw(
+            &p,
+            &lines(),
+            &Style {
+                shadow: false,
+                ..Style::default()
+            },
+        );
+        let (b, w2, h2) = draw(
+            &p,
+            &lines(),
+            &Style {
+                shadow: true,
+                ..Style::default()
+            },
+        );
         assert!(coverage(&b, w2, h2) > coverage(&a, w1, h1));
     }
 
     #[test]
     fn opacity_scales_alpha() {
         let p = Painter::new().unwrap();
-        let full = Style { opacity: 1.0, shadow: false, ..Style::default() };
-        let half = Style { opacity: 0.5, shadow: false, ..Style::default() };
+        let full = Style {
+            opacity: 1.0,
+            shadow: false,
+            ..Style::default()
+        };
+        let half = Style {
+            opacity: 0.5,
+            shadow: false,
+            ..Style::default()
+        };
         let (a, _, _) = draw(&p, &lines(), &full);
         let (b, _, _) = draw(&p, &lines(), &half);
         let peak = |px: &[u8]| px.chunks_exact(4).map(|q| q[3]).max().unwrap();
         assert_eq!(peak(&a), 255);
-        assert!((120..=136).contains(&peak(&b)), "peak alpha was {}", peak(&b));
+        assert!(
+            (120..=136).contains(&peak(&b)),
+            "peak alpha was {}",
+            peak(&b)
+        );
     }
 
     #[test]
     fn tabular_figures_keep_the_width_constant_across_digits() {
         let p = Painter::new().unwrap();
-        let style = Style { tabular_figures: true, show_summary_line: false, ..Style::default() };
-        let a = p.measure(&Lines { summary: None, main: "11:11:11".into() }, &style).unwrap();
-        let b = p.measure(&Lines { summary: None, main: "00:00:00".into() }, &style).unwrap();
+        let style = Style {
+            tabular_figures: true,
+            show_summary_line: false,
+            ..Style::default()
+        };
+        let a = p
+            .measure(
+                &Lines {
+                    summary: None,
+                    main: "11:11:11".into(),
+                },
+                &style,
+            )
+            .unwrap();
+        let b = p
+            .measure(
+                &Lines {
+                    summary: None,
+                    main: "00:00:00".into(),
+                },
+                &style,
+            )
+            .unwrap();
         assert_eq!(a.0, b.0);
     }
 
     #[test]
     fn outline_mode_draws_less_ink_than_fill() {
         let p = Painter::new().unwrap();
-        let base = Style { shadow: false, ..Style::default() };
-        let (f, fw, fh) = draw(&p, &lines(), &Style { mode: DrawMode::Fill, ..base.clone() });
-        let (o, ow, oh) = draw(&p, &lines(), &Style { mode: DrawMode::Outline, ..base.clone() });
+        let base = Style {
+            shadow: false,
+            ..Style::default()
+        };
+        let (f, fw, fh) = draw(
+            &p,
+            &lines(),
+            &Style {
+                mode: DrawMode::Fill,
+                ..base.clone()
+            },
+        );
+        let (o, ow, oh) = draw(
+            &p,
+            &lines(),
+            &Style {
+                mode: DrawMode::Outline,
+                ..base.clone()
+            },
+        );
         assert!(coverage(&o, ow, oh) > 0.005, "outline drew nothing");
         assert!(
             coverage(&o, ow, oh) < coverage(&f, fw, fh),
@@ -443,9 +577,27 @@ mod tests {
     #[test]
     fn both_mode_draws_more_ink_than_fill() {
         let p = Painter::new().unwrap();
-        let base = Style { shadow: false, outline_width_px: 3.0, ..Style::default() };
-        let (f, fw, fh) = draw(&p, &lines(), &Style { mode: DrawMode::Fill, ..base.clone() });
-        let (b, bw, bh) = draw(&p, &lines(), &Style { mode: DrawMode::Both, ..base.clone() });
+        let base = Style {
+            shadow: false,
+            outline_width_px: 3.0,
+            ..Style::default()
+        };
+        let (f, fw, fh) = draw(
+            &p,
+            &lines(),
+            &Style {
+                mode: DrawMode::Fill,
+                ..base.clone()
+            },
+        );
+        let (b, bw, bh) = draw(
+            &p,
+            &lines(),
+            &Style {
+                mode: DrawMode::Both,
+                ..base.clone()
+            },
+        );
         assert!(coverage(&b, bw, bh) > coverage(&f, fw, fh));
     }
 
@@ -461,9 +613,15 @@ mod tests {
             outline_width_px: 1.5,
             ..Style::default()
         };
-        let l = Lines { summary: None, main: "0".into() };
+        let l = Lines {
+            summary: None,
+            main: "0".into(),
+        };
         let (px, w, h) = draw(&p, &l, &style);
         let a = px[(((h / 2) * w + w / 2) * 4 + 3) as usize];
-        assert_eq!(a, 0, "the centre of '0' should be transparent in outline mode");
+        assert_eq!(
+            a, 0,
+            "the centre of '0' should be transparent in outline mode"
+        );
     }
 }

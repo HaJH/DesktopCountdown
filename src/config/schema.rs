@@ -123,7 +123,10 @@ pub struct Layout {
 
 impl Default for Layout {
     fn default() -> Self {
-        Self { anchor: d_anchor(), offset_px: d_offset() }
+        Self {
+            anchor: d_anchor(),
+            offset_px: d_offset(),
+        }
     }
 }
 
@@ -220,7 +223,9 @@ pub enum ConfigError {
 }
 
 fn check_color(s: &str) -> Result<(), ConfigError> {
-    parse_hex(s).map(|_| ()).ok_or_else(|| ConfigError::Color(s.to_string()))
+    parse_hex(s)
+        .map(|_| ())
+        .ok_or_else(|| ConfigError::Color(s.to_string()))
 }
 
 fn check_opacity(v: f32) -> Result<(), ConfigError> {
@@ -232,7 +237,11 @@ fn check_opacity(v: f32) -> Result<(), ConfigError> {
 }
 
 fn check_size(v: f32) -> Result<(), ConfigError> {
-    if v.is_finite() && v > 0.0 { Ok(()) } else { Err(ConfigError::Size(v)) }
+    if v.is_finite() && v > 0.0 {
+        Ok(())
+    } else {
+        Err(ConfigError::Size(v))
+    }
 }
 
 fn check_weight(v: u16) -> Result<(), ConfigError> {
@@ -244,7 +253,11 @@ fn check_weight(v: u16) -> Result<(), ConfigError> {
 }
 
 fn check_outline_width(v: f32) -> Result<(), ConfigError> {
-    if v.is_finite() && v >= 0.0 { Ok(()) } else { Err(ConfigError::OutlineWidth(v)) }
+    if v.is_finite() && v >= 0.0 {
+        Ok(())
+    } else {
+        Err(ConfigError::OutlineWidth(v))
+    }
 }
 
 pub fn validate(cfg: &Config) -> Result<(), ConfigError> {
@@ -342,7 +355,8 @@ size_px = 48.0
     #[test]
     fn draw_mode_is_lowercase() {
         let cfg: Config =
-            toml::from_str("target = \"2026-10-24T09:00:00\"\n[style]\nmode = \"outline\"").unwrap();
+            toml::from_str("target = \"2026-10-24T09:00:00\"\n[style]\nmode = \"outline\"")
+                .unwrap();
         assert_eq!(cfg.style.mode, DrawMode::Outline);
     }
 

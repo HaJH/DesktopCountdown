@@ -37,7 +37,14 @@ impl IDWritePixelSnapping_Impl for OutlineCollector_Impl {
         // DrawGlyphRun below can panic-free-ly assume this pointer is valid: it is an
         // out-parameter DirectWrite allocates on its own stack before calling us.
         unsafe {
-            *transform = DWRITE_MATRIX { m11: 1.0, m12: 0.0, m21: 0.0, m22: 1.0, dx: 0.0, dy: 0.0 };
+            *transform = DWRITE_MATRIX {
+                m11: 1.0,
+                m12: 0.0,
+                m21: 0.0,
+                m22: 1.0,
+                dx: 0.0,
+                dy: 0.0,
+            };
         }
         Ok(())
     }
@@ -65,7 +72,9 @@ impl IDWriteTextRenderer_Impl for OutlineCollector_Impl {
         // everything past it uses `?` instead of `unwrap`/indexing panics.
         unsafe {
             let run = &*glyph_run;
-            let Some(face) = run.fontFace.as_ref() else { return Ok(()) };
+            let Some(face) = run.fontFace.as_ref() else {
+                return Ok(());
+            };
 
             let path = self.d2d.CreatePathGeometry()?;
             let sink = path.Open()?;
@@ -141,7 +150,10 @@ pub(crate) fn collect_geometry(
     origin_y: f32,
 ) -> Result<Vec<ID2D1Geometry>> {
     let geoms: Collected = Rc::new(RefCell::new(Vec::new()));
-    let collector = OutlineCollector { d2d: d2d.clone(), geoms: Rc::clone(&geoms) };
+    let collector = OutlineCollector {
+        d2d: d2d.clone(),
+        geoms: Rc::clone(&geoms),
+    };
     let renderer: IDWriteTextRenderer = collector.into();
 
     unsafe { layout.Draw(None, &renderer, origin_x, origin_y)? };

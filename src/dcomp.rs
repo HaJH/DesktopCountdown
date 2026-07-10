@@ -7,7 +7,9 @@
 use anyhow::Result;
 use windows::core::Interface;
 use windows::Win32::Foundation::{HMODULE, HWND, POINT};
-use windows::Win32::Graphics::Direct2D::Common::{D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT};
+use windows::Win32::Graphics::Direct2D::Common::{
+    D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_PIXEL_FORMAT,
+};
 use windows::Win32::Graphics::Direct2D::{
     ID2D1Device, ID2D1DeviceContext, ID2D1Factory1, ID2D1RenderTarget,
     D2D1_BITMAP_OPTIONS_CANNOT_DRAW, D2D1_BITMAP_OPTIONS_TARGET, D2D1_BITMAP_PROPERTIES1,
@@ -21,7 +23,9 @@ use windows::Win32::Graphics::DirectComposition::{
     DCompositionCreateDevice, IDCompositionDevice, IDCompositionSurface, IDCompositionTarget,
     IDCompositionVisual,
 };
-use windows::Win32::Graphics::Dxgi::Common::{DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM};
+use windows::Win32::Graphics::Dxgi::Common::{
+    DXGI_ALPHA_MODE_PREMULTIPLIED, DXGI_FORMAT_B8G8R8A8_UNORM,
+};
 use windows::Win32::Graphics::Dxgi::{IDXGIDevice, IDXGISurface};
 
 pub struct Compositor {
@@ -53,7 +57,10 @@ impl Surface {
 /// app working instead of turning a missing GPU into a hard failure.
 fn create_d3d11_device() -> Result<ID3D11Device> {
     unsafe {
-        for (driver, name) in [(D3D_DRIVER_TYPE_HARDWARE, "HARDWARE"), (D3D_DRIVER_TYPE_WARP, "WARP")] {
+        for (driver, name) in [
+            (D3D_DRIVER_TYPE_HARDWARE, "HARDWARE"),
+            (D3D_DRIVER_TYPE_WARP, "WARP"),
+        ] {
             let mut d3d: Option<ID3D11Device> = None;
             let result = D3D11CreateDevice(
                 None,
@@ -141,7 +148,11 @@ impl Compositor {
             let dxgi: IDXGIDevice = d3d.cast()?;
             let dcomp: IDCompositionDevice = DCompositionCreateDevice(&dxgi)?;
             let d2d_device: ID2D1Device = d2d_factory.CreateDevice(&dxgi)?;
-            Ok(Self { dcomp, d2d_device, _d3d: d3d })
+            Ok(Self {
+                dcomp,
+                d2d_device,
+                _d3d: d3d,
+            })
         }
     }
 
@@ -150,7 +161,12 @@ impl Compositor {
             let target = self.dcomp.CreateTargetForHwnd(hwnd, true)?;
             let visual = self.dcomp.CreateVisual()?;
             target.SetRoot(&visual)?;
-            Ok(Surface { _target: target, visual, surface: None, size: (0, 0) })
+            Ok(Surface {
+                _target: target,
+                visual,
+                surface: None,
+                size: (0, 0),
+            })
         }
     }
 
@@ -166,7 +182,10 @@ impl Compositor {
         unsafe {
             if s.surface.is_none() || s.size != (w, h) {
                 let surface = self.dcomp.CreateSurface(
-                    w, h, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_ALPHA_MODE_PREMULTIPLIED,
+                    w,
+                    h,
+                    DXGI_FORMAT_B8G8R8A8_UNORM,
+                    DXGI_ALPHA_MODE_PREMULTIPLIED,
                 )?;
                 s.visual.SetContent(&surface)?;
                 s.surface = Some(surface);
@@ -180,11 +199,15 @@ impl Compositor {
             // The surface is locked from here. `SurfaceLock::drop` runs `surface.EndDraw()`
             // unconditionally -- on an early `?` return below *and* on a panic unwinding
             // through `f` -- so the surface is never left locked. See `SurfaceLock`.
-            let surface_lock = SurfaceLock { surface, armed: true };
+            let surface_lock = SurfaceLock {
+                surface,
+                armed: true,
+            };
 
             let result = (|| -> Result<()> {
-                let dc: ID2D1DeviceContext =
-                    self.d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
+                let dc: ID2D1DeviceContext = self
+                    .d2d_device
+                    .CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
                 let props = D2D1_BITMAP_PROPERTIES1 {
                     pixelFormat: D2D1_PIXEL_FORMAT {
                         format: DXGI_FORMAT_B8G8R8A8_UNORM,
@@ -208,7 +231,10 @@ impl Compositor {
                 // (running `dc.EndDraw()`) and then `surface_lock` (running
                 // `surface.EndDraw()`) on the way out, so the surface is released instead
                 // of staying locked forever.
-                let dc_lock = DeviceContextDraw { dc: &dc, armed: true };
+                let dc_lock = DeviceContextDraw {
+                    dc: &dc,
+                    armed: true,
+                };
                 let drawn = f(&rt, (offset.x as f32, offset.y as f32));
                 let ended = dc_lock.end();
                 drawn?;
@@ -253,8 +279,18 @@ mod tests {
             };
             RegisterClassW(&wc);
             CreateWindowExW(
-                WS_EX_TOOLWINDOW, w!("DCompTestWindow"), PCWSTR::null(), WS_POPUP,
-                0, 0, 64, 64, None, None, Some(hinst.into()), None,
+                WS_EX_TOOLWINDOW,
+                w!("DCompTestWindow"),
+                PCWSTR::null(),
+                WS_POPUP,
+                0,
+                0,
+                64,
+                64,
+                None,
+                None,
+                Some(hinst.into()),
+                None,
             )
             .unwrap()
         }
@@ -273,7 +309,14 @@ mod tests {
         let mut s = c.attach(hidden_window()).unwrap();
 
         c.draw(&mut s, 64, 64, |rt, _offset| {
-            unsafe { rt.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 })) };
+            unsafe {
+                rt.Clear(Some(&D2D1_COLOR_F {
+                    r: 0.0,
+                    g: 0.0,
+                    b: 0.0,
+                    a: 0.0,
+                }))
+            };
             Ok(())
         })
         .unwrap();
@@ -313,7 +356,10 @@ mod tests {
         assert!(r.is_err());
 
         let r = c.draw(&mut s, 16, 16, |_, _| Ok(()));
-        assert!(r.is_ok(), "surface stayed locked after a failing callback: {r:?}");
+        assert!(
+            r.is_ok(),
+            "surface stayed locked after a failing callback: {r:?}"
+        );
     }
 
     /// Companion to `surface_still_usable_after_a_failing_callback`, but for an unwinding
@@ -341,6 +387,9 @@ mod tests {
         assert!(caught.is_err(), "the panicking callback did not panic");
 
         let r = c.draw(&mut s, 16, 16, |_, _| Ok(()));
-        assert!(r.is_ok(), "surface stayed locked after a panicking callback: {r:?}");
+        assert!(
+            r.is_ok(),
+            "surface stayed locked after a panicking callback: {r:?}"
+        );
     }
 }
