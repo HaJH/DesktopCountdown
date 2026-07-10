@@ -359,6 +359,12 @@ fn panic_message(payload: &(dyn Any + Send)) -> &str {
     }
 }
 
+thread_local! {
+    // Blocks wndproc from forming a second &mut App if a SENT message (e.g. WM_DPICHANGED
+    // during a cross-process SendMessage/SetParent inside tick) re-enters us mid-tick.
+    static IN_WNDPROC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 /// The window procedure for the hidden controller window.
 ///
 /// # Safety (panics)
@@ -380,11 +386,25 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
         return DefWindowProcW(hwnd, msg, wp, lp);
     }
 
+    if IN_WNDPROC.with(|f| f.replace(true)) {
+        // Re-entrant call: `tick` can be blocked inside a cross-process
+        // SendMessage/SetParent (`workerw::acquire`, `ChildWindow::create`) when
+        // Windows delivers a SENT message -- e.g. WM_DPICHANGED -- to this wndproc
+        // synchronously (documented anti-deadlock behaviour). Forming a second
+        // `&mut App` here would alias the outer call's still-live `&mut App` (UB)
+        // and could re-enter `rebuild_panels` mid-rebuild, corrupting `self.panels`.
+        // Drop the message instead: the outer WM_DISPLAYCHANGE/WM_DPICHANGED handler
+        // already rebuilds, and the next tick's `is_alive`/re-acquire reconciles
+        // whatever this drop missed, so no state is permanently lost.
+        return DefWindowProcW(hwnd, msg, wp, lp);
+    }
+
     // SAFETY: `ptr` was stored by `create_controller_window` from `&mut App` on
     // `App::run`'s stack frame. That frame outlives this window (see the comment
-    // in `App::run` next to `create_controller_window`), and no other code holds a
-    // reference to the same `App` while `wndproc` runs (it is single-threaded,
-    // driven only by this thread's message loop), so a unique `&mut App` here is sound.
+    // in `App::run` next to `create_controller_window`), and the `IN_WNDPROC` guard
+    // above ensures no other live call on this thread already holds a `&mut App` to
+    // the same value (it is single-threaded, driven only by this thread's message
+    // loop), so a unique `&mut App` here is sound.
     let app = &mut *ptr;
 
     // `&mut App` is not `UnwindSafe`: it lets code past a caught panic observe
@@ -398,6 +418,11 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
     // possibly-stale next frame, and we log loudly so it is never silent.
     let outcome =
         std::panic::catch_unwind(AssertUnwindSafe(|| handle_message(app, hwnd, msg, wp, lp)));
+
+    // Clear the guard before returning on every path below (normal result or caught
+    // panic) so the next, non-reentrant call to wndproc is free to form its own
+    // &mut App again.
+    IN_WNDPROC.with(|f| f.set(false));
 
     match outcome {
         Ok(lresult) => lresult,
