@@ -232,11 +232,7 @@ fn check_opacity(v: f32) -> Result<(), ConfigError> {
 }
 
 fn check_size(v: f32) -> Result<(), ConfigError> {
-    if v > 0.0 {
-        Ok(())
-    } else {
-        Err(ConfigError::Size(v))
-    }
+    if v.is_finite() && v > 0.0 { Ok(()) } else { Err(ConfigError::Size(v)) }
 }
 
 fn check_weight(v: u16) -> Result<(), ConfigError> {
@@ -248,11 +244,7 @@ fn check_weight(v: u16) -> Result<(), ConfigError> {
 }
 
 fn check_outline_width(v: f32) -> Result<(), ConfigError> {
-    if v >= 0.0 {
-        Ok(())
-    } else {
-        Err(ConfigError::OutlineWidth(v))
-    }
+    if v.is_finite() && v >= 0.0 { Ok(()) } else { Err(ConfigError::OutlineWidth(v)) }
 }
 
 pub fn validate(cfg: &Config) -> Result<(), ConfigError> {
@@ -405,5 +397,44 @@ size_px = 48.0
         let text = toml::to_string_pretty(&cfg).unwrap();
         let back: Config = toml::from_str(&text).unwrap();
         assert_eq!(cfg, back);
+    }
+
+    #[test]
+    fn validate_rejects_infinite_size() {
+        let cfg: Config = toml::from_str(
+            r#"
+target = "2026-10-24T09:00:00"
+[style]
+size_px = inf
+"#,
+        )
+        .unwrap();
+        assert!(matches!(validate(&cfg), Err(ConfigError::Size(_))));
+    }
+
+    #[test]
+    fn validate_rejects_infinite_outline_width() {
+        let cfg: Config = toml::from_str(
+            r#"
+target = "2026-10-24T09:00:00"
+[style]
+outline_width_px = inf
+"#,
+        )
+        .unwrap();
+        assert!(matches!(validate(&cfg), Err(ConfigError::OutlineWidth(_))));
+    }
+
+    #[test]
+    fn validate_rejects_nan_opacity() {
+        let cfg: Config = toml::from_str(
+            r#"
+target = "2026-10-24T09:00:00"
+[style]
+opacity = nan
+"#,
+        )
+        .unwrap();
+        assert!(matches!(validate(&cfg), Err(ConfigError::Opacity(_))));
     }
 }
