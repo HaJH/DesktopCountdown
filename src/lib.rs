@@ -4,3 +4,6 @@ pub mod color;
 pub mod config;
 pub mod countdown;
 pub mod layout;
+pub mod logging;
+pub mod paths;
+pub mod single_instance;
