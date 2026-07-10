@@ -25,15 +25,3 @@ pub fn run() -> Result<()> {
     .map_err(|e| anyhow::anyhow!("eframe run failed: {e}"))?;
     Ok(())
 }
-
-impl eframe::App for SettingsApp {
-    fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
-        eframe::egui::CentralPanel::default().show(ui, |ui| {
-            ui.label("설정 창 (UI 구현 예정)");
-        });
-        let now = self.now_ms();
-        self.save_if_due(now);
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(200));
-    }
-}
