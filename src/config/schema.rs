@@ -220,6 +220,8 @@ pub enum ConfigError {
     Weight(u16),
     #[error("outline_width_px must not be negative, got {0}")]
     OutlineWidth(f32),
+    #[error("letter_spacing_em must be finite, got {0}")]
+    LetterSpacing(f32),
 }
 
 fn check_color(s: &str) -> Result<(), ConfigError> {
@@ -260,6 +262,14 @@ fn check_outline_width(v: f32) -> Result<(), ConfigError> {
     }
 }
 
+fn check_letter_spacing(v: f32) -> Result<(), ConfigError> {
+    if v.is_finite() {
+        Ok(())
+    } else {
+        Err(ConfigError::LetterSpacing(v))
+    }
+}
+
 pub fn validate(cfg: &Config) -> Result<(), ConfigError> {
     let s = &cfg.style;
     check_color(&s.color)?;
@@ -268,6 +278,7 @@ pub fn validate(cfg: &Config) -> Result<(), ConfigError> {
     check_size(s.size_px)?;
     check_weight(s.font_weight)?;
     check_outline_width(s.outline_width_px)?;
+    check_letter_spacing(s.letter_spacing_em)?;
 
     for d in &cfg.displays {
         if let Some(v) = &d.color {
@@ -287,6 +298,9 @@ pub fn validate(cfg: &Config) -> Result<(), ConfigError> {
         }
         if let Some(v) = d.outline_width_px {
             check_outline_width(v)?;
+        }
+        if let Some(v) = d.letter_spacing_em {
+            check_letter_spacing(v)?;
         }
     }
     Ok(())
@@ -450,5 +464,46 @@ opacity = nan
         )
         .unwrap();
         assert!(matches!(validate(&cfg), Err(ConfigError::Opacity(_))));
+    }
+
+    #[test]
+    fn validate_rejects_nan_letter_spacing() {
+        let cfg: Config = toml::from_str(
+            r#"
+target = "2026-10-24T09:00:00"
+[style]
+letter_spacing_em = nan
+"#,
+        )
+        .unwrap();
+        assert!(matches!(validate(&cfg), Err(ConfigError::LetterSpacing(_))));
+    }
+
+    #[test]
+    fn validate_rejects_infinite_letter_spacing() {
+        let cfg: Config = toml::from_str(
+            r#"
+target = "2026-10-24T09:00:00"
+[style]
+letter_spacing_em = inf
+"#,
+        )
+        .unwrap();
+        assert!(matches!(validate(&cfg), Err(ConfigError::LetterSpacing(_))));
+    }
+
+    #[test]
+    fn validate_rejects_letter_spacing_in_display_override() {
+        let cfg: Config = toml::from_str(
+            r#"
+target = "2026-10-24T09:00:00"
+
+[[display]]
+id = "x"
+letter_spacing_em = nan
+"#,
+        )
+        .unwrap();
+        assert!(matches!(validate(&cfg), Err(ConfigError::LetterSpacing(_))));
     }
 }
