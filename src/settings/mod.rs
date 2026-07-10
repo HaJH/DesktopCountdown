@@ -1,6 +1,7 @@
 //! The egui settings window, launched via `desktop-countdown.exe --settings`.
 //! It edits config.toml; the renderer watches the file and applies changes.
 
+pub mod overrides;
 pub mod widgets;
 
 use anyhow::Result;
