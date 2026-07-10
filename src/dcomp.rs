@@ -125,33 +125,40 @@ impl Compositor {
             let mut offset = POINT::default();
             let dxgi_surface: IDXGISurface = surface.BeginDraw(None, &mut offset)?;
 
-            let dc: ID2D1DeviceContext =
-                self.d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
-            let props = D2D1_BITMAP_PROPERTIES1 {
-                pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
-                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
-                },
-                dpiX: 96.0,
-                dpiY: 96.0,
-                bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
-                ..Default::default()
-            };
-            let bitmap = dc.CreateBitmapFromDxgiSurface(&dxgi_surface, Some(&props))?;
-            dc.SetTarget(&bitmap);
-            dc.BeginDraw();
+            // The surface is locked from here. `surface.EndDraw()` must run no matter what
+            // fails below, or it stays locked forever and every later `draw` call on this
+            // Surface fails with DCOMPOSITION_ERROR_SURFACE_BEING_RENDERED.
+            let result = (|| -> Result<()> {
+                let dc: ID2D1DeviceContext =
+                    self.d2d_device.CreateDeviceContext(D2D1_DEVICE_CONTEXT_OPTIONS_NONE)?;
+                let props = D2D1_BITMAP_PROPERTIES1 {
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                    },
+                    dpiX: 96.0,
+                    dpiY: 96.0,
+                    bitmapOptions: D2D1_BITMAP_OPTIONS_TARGET | D2D1_BITMAP_OPTIONS_CANNOT_DRAW,
+                    ..Default::default()
+                };
+                let bitmap = dc.CreateBitmapFromDxgiSurface(&dxgi_surface, Some(&props))?;
+                dc.SetTarget(&bitmap);
+                // Obtained before `dc.BeginDraw()` so a failing cast cannot leave the
+                // device context mid-draw.
+                let rt: ID2D1RenderTarget = dc.cast()?;
 
-            let rt: ID2D1RenderTarget = dc.cast()?;
-            let result = f(&rt, (offset.x as f32, offset.y as f32));
+                dc.BeginDraw();
+                let drawn = f(&rt, (offset.x as f32, offset.y as f32));
+                let ended = dc.EndDraw(None, None);
+                drawn?;
+                ended?;
+                Ok(())
+            })();
 
-            // EndDraw must run even if the callback failed, or the surface stays locked
-            // forever and every later `draw` call on this Surface fails too.
-            let end = dc.EndDraw(None, None);
-            let unlock = surface.EndDraw();
+            surface.EndDraw()?;
             result?;
-            end?;
-            unlock?;
-
+            // Commit is skipped when the frame failed: leaving the last good frame on
+            // screen beats publishing a half-drawn one.
             self.dcomp.Commit()?;
         }
         Ok(())
