@@ -35,9 +35,17 @@ pub fn breakdown(now: &Zoned, target: &Zoned) -> Breakdown {
 
     // Calendar units for the summary line. `until` clamps month-end overflow
     // (Jan 31 + 1 month => Feb 28/29), which is what the spec asks for.
+    //
+    // `until` with a calendar unit rejects `Zoned` values whose `TimeZone`s
+    // aren't equal, even when both denote the same instants (e.g.
+    // `TimeZone::fixed(offset(9))` vs. IANA `Asia/Seoul`). Reinterpret
+    // `target` in `now`'s time zone first so the two are equal by
+    // construction; this changes no instant, only which zone they're
+    // compared in.
+    let target = target.with_time_zone(now.time_zone().clone());
     let span = now
-        .until((Unit::Month, target))
-        .expect("calendar difference between two zoned datetimes");
+        .until((Unit::Month, &target))
+        .expect("time zones are equal by construction; any error here is a jiff bug");
     let rem_days = span.get_days();
 
     Breakdown {
@@ -135,5 +143,55 @@ mod tests {
     fn months_have_no_upper_bound() {
         let b = breakdown(&z(2026, 1, 1, 0, 0, 0), &z(2027, 7, 1, 0, 0, 0));
         assert_eq!(format_summary(&b), "18m 0w 0d");
+    }
+
+    #[test]
+    fn differing_time_of_day_borrows_a_day() {
+        // now=2026-07-10 23:30:00 -> target=2026-10-24 09:00:00.
+        //
+        // Calendar months: 2026-07-10 23:30 + 3 months = 2026-10-10 23:30,
+        // which does not overshoot the target, so months = 3.
+        //
+        // The remainder from 2026-10-10 23:30 to 2026-10-24 09:00 spans 14
+        // calendar days of the month (10 -> 24), but the target's
+        // time-of-day (09:00) is earlier than now's (23:30), so one whole
+        // day is borrowed to cover the negative time-of-day difference:
+        // 13 days + (24:00 - 14:30) = 13 days 9h30m. That leaves
+        // weeks=1, days=6 (13 = 1*7 + 6); hours/minutes never reach the
+        // summary line.
+        //
+        // total_hours is independent of the calendar breakdown: the
+        // instant-to-instant gap is 106 calendar days (day-of-year 191 ->
+        // 297) minus 14h30m (23:30 -> next day's 09:00 offset) =
+        // 9_106_200 seconds = 2529h30m0s exactly, so
+        // total_hours = floor(9_106_200 / 3600) = 2529.
+        let b = breakdown(&z(2026, 7, 10, 23, 30, 0), &z(2026, 10, 24, 9, 0, 0));
+        assert!(!b.expired);
+        assert_eq!(format_summary(&b), "3m 1w 6d");
+        assert_eq!(format_main(&b), "2529:30:00");
+    }
+
+    #[test]
+    fn mismatched_but_equivalent_time_zones_do_not_panic() {
+        // `TimeZone::fixed(offset(9))` and IANA `Asia/Seoul` are distinct
+        // `TimeZone` values even though Asia/Seoul has used a fixed UTC+9
+        // offset (no DST) for the whole of 2026, so the same civil
+        // datetime in each denotes the same instant. Before the fix,
+        // `breakdown` would panic here because `Zoned::until` with a
+        // calendar unit rejects mismatched time zones outright.
+        let seoul = TimeZone::get("Asia/Seoul").expect("bundled tzdb has Asia/Seoul");
+        let now_fixed = z(2026, 7, 10, 23, 30, 0);
+        let target_fixed = z(2026, 10, 24, 9, 0, 0);
+        let target_seoul = datetime(2026, 10, 24, 9, 0, 0, 0)
+            .to_zoned(seoul)
+            .unwrap();
+
+        let b = breakdown(&now_fixed, &target_seoul);
+
+        assert!(!b.expired);
+        let expected = breakdown(&now_fixed, &target_fixed);
+        assert_eq!(b, expected);
+        assert_eq!(format_summary(&b), "3m 1w 6d");
+        assert_eq!(format_main(&b), "2529:30:00");
     }
 }
