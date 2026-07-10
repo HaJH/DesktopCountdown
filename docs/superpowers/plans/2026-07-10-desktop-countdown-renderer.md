@@ -72,8 +72,9 @@ tracing-appender = "0.2"
 
 [dependencies.windows]
 version = "0.62"
+# No "implement" feature: windows 0.62 re-exports the `#[implement]` macro
+# unconditionally as `windows::core::implement`. Task 10 uses it.
 features = [
-    "implement",
     "Win32_Foundation",
     "Win32_Graphics_Direct2D",
     "Win32_Graphics_Direct2D_Common",
