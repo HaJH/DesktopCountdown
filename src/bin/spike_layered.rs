@@ -61,8 +61,11 @@ fn main() -> Result<()> {
         )?;
 
         // Child coordinates are relative to the parent's client area.
-        let mut origin = POINT { x: 100, y: 100 };
+        let (sx, sy) = screen_origin_from_args();
+        println!("screen origin = ({sx}, {sy})");
+        let mut origin = POINT { x: sx, y: sy };
         windows::Win32::Graphics::Gdi::ScreenToClient(workerw, &mut origin).ok()?;
+        println!("client origin = ({}, {})", origin.x, origin.y);
         SetWindowPos(hwnd, Some(HWND_TOP), origin.x, origin.y, W, H, SWP_NOACTIVATE | SWP_NOZORDER)?;
 
         push_gradient(hwnd)?;
@@ -73,6 +76,27 @@ fn main() -> Result<()> {
             DispatchMessageW(&msg);
         }
         Ok(())
+    }
+}
+
+/// Virtual-desktop screen coordinates for the rectangle's top-left corner.
+/// Defaults to (100, 100) on the primary monitor; pass `x y` to target another one,
+/// including monitors at negative coordinates.
+fn screen_origin_from_args() -> (i32, i32) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    match args.as_slice() {
+        [x, y] => match (x.parse(), y.parse()) {
+            (Ok(x), Ok(y)) => (x, y),
+            _ => {
+                eprintln!("usage: spike_layered [X Y]   (integers, virtual-desktop coordinates)");
+                std::process::exit(2);
+            }
+        },
+        [] => (100, 100),
+        _ => {
+            eprintln!("usage: spike_layered [X Y]   (integers, virtual-desktop coordinates)");
+            std::process::exit(2);
+        }
     }
 }
 
