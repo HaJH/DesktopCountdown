@@ -63,8 +63,74 @@ pub fn run() -> Result<()> {
     eframe::run_native(
         "DesktopCountdown 설정",
         native_options,
-        Box::new(|_cc| Ok(Box::new(SettingsApp::new()?))),
+        Box::new(|cc| {
+            install_korean_font(&cc.egui_ctx);
+            Ok(Box::new(SettingsApp::new()?))
+        }),
     )
     .map_err(|e| anyhow::anyhow!("eframe run failed: {e}"))?;
     Ok(())
+}
+
+/// Windows fonts that cover Hangul, in preference order. Malgun Gothic ships on Vista+.
+const KOREAN_FONTS: [&str; 3] = [
+    r"C:\Windows\Fonts\malgun.ttf",
+    r"C:\Windows\Fonts\gulim.ttc",
+    r"C:\Windows\Fonts\batang.ttc",
+];
+
+/// Reads the first available Korean font's bytes. egui's bundled fonts contain no CJK glyphs, so
+/// without installing one, every Hangul label in this UI renders as tofu (□) — the egui docs say
+/// asian characters require `Context::set_fonts` with your own font.
+fn korean_font_data() -> Option<Vec<u8>> {
+    for path in KOREAN_FONTS {
+        match std::fs::read(path) {
+            Ok(data) if !data.is_empty() => return Some(data),
+            _ => continue,
+        }
+    }
+    None
+}
+
+/// Installs a Korean font as a fallback in egui's font families. Latin text still uses egui's
+/// default font first; Hangul glyphs (absent there) fall through to this font.
+fn install_korean_font(ctx: &eframe::egui::Context) {
+    use eframe::egui::{FontData, FontDefinitions, FontFamily};
+
+    let Some(data) = korean_font_data() else {
+        tracing::warn!(
+            "no Korean font found under C:\\Windows\\Fonts; Hangul UI will show as tofu"
+        );
+        return;
+    };
+    let mut fonts = FontDefinitions::default();
+    fonts.font_data.insert(
+        "korean".to_owned(),
+        std::sync::Arc::new(FontData::from_owned(data)),
+    );
+    for family in [FontFamily::Proportional, FontFamily::Monospace] {
+        fonts
+            .families
+            .entry(family)
+            .or_default()
+            .push("korean".to_owned());
+    }
+    ctx.set_fonts(fonts);
+    tracing::info!("Korean font installed for the settings UI");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_korean_font_is_available_on_this_system() {
+        // Windows ships Malgun Gothic; without a Korean font the settings UI is unreadable.
+        let data = korean_font_data();
+        assert!(
+            data.is_some(),
+            "no Korean font found under C:\\Windows\\Fonts"
+        );
+        assert!(!data.unwrap().is_empty(), "Korean font file was empty");
+    }
 }
