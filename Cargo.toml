@@ -21,6 +21,9 @@ serde = { version = "1", features = ["derive"] }
 toml = "1"
 notify = "8"
 tray-icon = "0.24"
+# Matches the version epaint 0.35 uses internally, so font-parsing behavior stays
+# consistent between our pre-validation and egui's own loading.
+skrifa = "0.42"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"

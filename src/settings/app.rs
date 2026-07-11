@@ -1,5 +1,6 @@
 //! Settings window state, save logic, and the eframe UI itself.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -33,6 +34,78 @@ pub struct SettingsApp {
     pub(crate) last_change_ms: u64,
     pub(crate) cfg_path: PathBuf,
     pub(crate) error: Option<String>,
+    /// Tracks which font families are safe to render via `FontFamily::Name` (see
+    /// `FontRegistry`).
+    pub(crate) font_registry: FontRegistry,
+    /// Filter text for the font picker's searchable list.
+    pub(crate) font_search: String,
+}
+
+/// Tracks, across frames, which font families are registered with egui for the font
+/// picker's per-name rendering (each family name is drawn in its own font — see
+/// `style_fields`).
+///
+/// This needs three buckets, not just one, because of two egui/epaint constraints
+/// discovered by running the settings window and reading its panic:
+///
+/// - `Context::add_font` only takes effect "at the start of the next pass" (its own
+///   doc comment). Using `FontFamily::Name(family)` for a family added THIS frame
+///   panics epaint (`Fonts::font`: "is not bound to any fonts") because
+///   `font_definitions.families` is not updated until the next pass begins. So a
+///   freshly queued family sits in `pending` and is only promoted into `active` —
+///   meaning "safe to use `FontFamily::Name` now" — by `promote_pending`, which
+///   `SettingsApp::ui` calls once at the very top of every frame (i.e. after at least
+///   one full pass has elapsed since the `add_font` call).
+/// - A family with no local file, or a corrupt one (`fonts::font_file` already
+///   filters corrupt files out via its skrifa check), is never registered with egui
+///   at all, so using `FontFamily::Name` for it would ALSO panic — permanently, not
+///   just for one frame. Those are cached in `failed` so we neither retry the load
+///   every frame nor ever try to render them in their own (nonexistent) family.
+#[derive(Default)]
+pub(crate) struct FontRegistry {
+    active: HashSet<String>,
+    pending: HashSet<String>,
+    failed: HashSet<String>,
+}
+
+impl FontRegistry {
+    /// Moves families queued last frame into `active`. Must be called once per frame,
+    /// before any rendering that might request `FontFamily::Name` for a family queued
+    /// during the previous frame — otherwise that rendering can panic (see struct docs).
+    fn promote_pending(&mut self) {
+        self.active.extend(self.pending.drain());
+    }
+
+    /// Registers `family` with `ctx` if it hasn't been tried yet, and reports whether
+    /// it is safe to render with `FontFamily::Name(family)` *this* frame. Never panics
+    /// and never retries a family already known to have failed.
+    fn ensure(&mut self, ctx: &egui::Context, family: &str) -> bool {
+        if self.active.contains(family) {
+            return true;
+        }
+        if self.pending.contains(family) || self.failed.contains(family) {
+            return false;
+        }
+        match crate::fonts::font_file(family) {
+            Some(file) => {
+                let mut data = egui::FontData::from_owned(file.bytes);
+                data.index = file.index;
+                ctx.add_font(egui::epaint::text::FontInsert::new(
+                    family,
+                    data,
+                    vec![egui::epaint::text::InsertFontFamily {
+                        family: egui::FontFamily::Name(family.into()),
+                        priority: egui::epaint::text::FontPriority::Highest,
+                    }],
+                ));
+                self.pending.insert(family.to_string());
+            }
+            None => {
+                self.failed.insert(family.to_string());
+            }
+        }
+        false
+    }
 }
 
 impl SettingsApp {
@@ -57,6 +130,8 @@ impl SettingsApp {
             last_change_ms: 0,
             cfg_path,
             error: None,
+            font_registry: FontRegistry::default(),
+            font_search: String::new(),
         })
     }
 
@@ -102,9 +177,9 @@ impl SettingsApp {
                     self.dirty = false;
                     self.error = None;
                 }
-                Err(e) => self.error = Some(format!("저장 실패: {e}")),
+                Err(e) => self.error = Some(format!("Save failed: {e}")),
             },
-            Err(e) => self.error = Some(format!("잘못된 설정: {e}")),
+            Err(e) => self.error = Some(format!("Invalid config: {e}")),
         }
     }
 }
@@ -119,9 +194,17 @@ const DATE_FIELDS_MEMORY_ID: &str = "dc_settings_target_date_fields";
 
 impl eframe::App for SettingsApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        // Fonts queued last frame are now bound at the epaint level (egui applies
+        // `ctx.add_font` "at the start of the next pass"), so this must run before any
+        // widget in this frame might render with `FontFamily::Name` for one of them.
+        self.font_registry.promote_pending();
+
         if let Some(err) = self.error.clone() {
             egui::Panel::top("dc_error_banner").show(ui, |ui| {
-                ui.colored_label(egui::Color32::from_rgb(220, 50, 50), format!("오류: {err}"));
+                ui.colored_label(
+                    egui::Color32::from_rgb(220, 50, 50),
+                    format!("Error: {err}"),
+                );
             });
         }
 
@@ -160,19 +243,19 @@ impl eframe::App for SettingsApp {
 impl SettingsApp {
     fn ui_target_selector(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label("편집 대상:");
+            ui.label("Editing:");
             let selected_text = match self.target {
-                Target::Global => "전역 기본값".to_string(),
+                Target::Global => "Global default".to_string(),
                 Target::Monitor(i) => self
                     .monitors
                     .get(i)
                     .map(|m| m.name.clone())
-                    .unwrap_or_else(|| "(알 수 없는 모니터)".to_string()),
+                    .unwrap_or_else(|| "(Unknown monitor)".to_string()),
             };
             egui::ComboBox::from_id_salt("dc_target_combo")
                 .selected_text(selected_text)
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.target, Target::Global, "전역 기본값");
+                    ui.selectable_value(&mut self.target, Target::Global, "Global default");
                     for (i, m) in self.monitors.iter().enumerate() {
                         ui.selectable_value(&mut self.target, Target::Monitor(i), m.name.clone());
                     }
@@ -184,7 +267,7 @@ impl SettingsApp {
     /// colour of the current edit target. Not a pixel match for the real DirectWrite
     /// renderer (design §4) — just a sense of colour/size/summary-line-on-off.
     fn ui_preview(&self, ui: &mut egui::Ui) {
-        ui.heading("미리보기");
+        ui.heading("Preview");
 
         let eff = match self.target {
             Target::Global => config::Effective {
@@ -220,11 +303,11 @@ impl SettingsApp {
             });
 
         ui.add_space(6.0);
-        ui.small("정확한 표시는 바탕화면에서 확인하세요.");
+        ui.small("Preview is approximate; see the desktop for the exact result.");
         if !eff.enabled {
             ui.colored_label(
                 egui::Color32::from_rgb(220, 160, 60),
-                "이 모니터는 비활성화됨",
+                "This monitor is disabled",
             );
         }
     }
@@ -259,21 +342,21 @@ impl SettingsApp {
                 .add(
                     egui::DragValue::new(&mut fields.year)
                         .range(2000..=2100)
-                        .prefix("년 "),
+                        .prefix("Year "),
                 )
                 .changed();
             changed |= ui
                 .add(
                     egui::DragValue::new(&mut fields.month)
                         .range(1..=12)
-                        .prefix("월 "),
+                        .prefix("Month "),
                 )
                 .changed();
             changed |= ui
                 .add(
                     egui::DragValue::new(&mut fields.day)
                         .range(1..=31)
-                        .prefix("일 "),
+                        .prefix("Day "),
                 )
                 .changed();
         });
@@ -282,21 +365,21 @@ impl SettingsApp {
                 .add(
                     egui::DragValue::new(&mut fields.hour)
                         .range(0..=23)
-                        .prefix("시 "),
+                        .prefix("Hour "),
                 )
                 .changed();
             changed |= ui
                 .add(
                     egui::DragValue::new(&mut fields.minute)
                         .range(0..=59)
-                        .prefix("분 "),
+                        .prefix("Min "),
                 )
                 .changed();
             changed |= ui
                 .add(
                     egui::DragValue::new(&mut fields.second)
                         .range(0..=59)
-                        .prefix("초 "),
+                        .prefix("Sec "),
                 )
                 .changed();
         });
@@ -309,7 +392,7 @@ impl SettingsApp {
                 }
             }
             None => {
-                ui.colored_label(egui::Color32::from_rgb(220, 50, 50), "잘못된 날짜");
+                ui.colored_label(egui::Color32::from_rgb(220, 50, 50), "Invalid date");
             }
         }
 
@@ -317,18 +400,24 @@ impl SettingsApp {
     }
 
     fn ui_global(&mut self, ui: &mut egui::Ui) {
-        ui.heading("목표 시각");
+        ui.heading("Target time");
         self.ui_date_fields(ui);
         ui.separator();
 
-        ui.heading("글자");
+        ui.heading("Text");
         let fonts = self.fonts.clone();
-        if style_fields(ui, &mut self.cfg.style, &fonts) {
+        if style_fields(
+            ui,
+            &mut self.cfg.style,
+            &fonts,
+            &mut self.font_registry,
+            &mut self.font_search,
+        ) {
             self.mark_dirty();
         }
         ui.separator();
 
-        ui.heading("레이아웃");
+        ui.heading("Layout");
         if anchor_grid(ui, "dc_anchor_global", &mut self.cfg.layout.anchor) {
             self.mark_dirty();
         }
@@ -356,9 +445,9 @@ impl SettingsApp {
         }
         ui.separator();
 
-        ui.heading("일반");
+        ui.heading("General");
         if ui
-            .checkbox(&mut self.cfg.general.autostart, "Windows 시작 시 자동 실행")
+            .checkbox(&mut self.cfg.general.autostart, "Start with Windows")
             .changed()
         {
             self.mark_dirty();
@@ -367,7 +456,7 @@ impl SettingsApp {
 
     fn ui_monitor(&mut self, ui: &mut egui::Ui, idx: usize) {
         let Some(mref) = self.monitors.get(idx).cloned() else {
-            ui.label("모니터를 찾을 수 없습니다.");
+            ui.label("Monitor not found.");
             return;
         };
         let id = mref.id;
@@ -378,7 +467,7 @@ impl SettingsApp {
         let mut enabled = overrides::find_override(&self.cfg, &id)
             .and_then(|o| o.enabled)
             .unwrap_or(true);
-        if ui.checkbox(&mut enabled, "이 모니터에 표시").changed() {
+        if ui.checkbox(&mut enabled, "Show on this monitor").changed() {
             overrides::set_enabled(&mut self.cfg, &id, &name, enabled);
             self.mark_dirty();
         }
@@ -387,7 +476,7 @@ impl SettingsApp {
             .map(overrides::has_style_override)
             .unwrap_or(false);
         if ui
-            .checkbox(&mut has_override, "전역과 다르게 설정")
+            .checkbox(&mut has_override, "Override for this monitor")
             .changed()
         {
             if has_override {
@@ -399,7 +488,7 @@ impl SettingsApp {
         }
 
         if !has_override {
-            ui.label("전역 설정을 그대로 따릅니다.");
+            ui.label("Follows the global settings.");
             return;
         }
         let Some(o_idx) = self.cfg.displays.iter().position(|d| d.id == id) else {
@@ -414,7 +503,7 @@ impl SettingsApp {
         let globals = self.cfg.style.clone();
         let global_layout = self.cfg.layout.clone();
 
-        ui.heading("레이아웃");
+        ui.heading("Layout");
         let mut anchor = self.cfg.displays[o_idx]
             .anchor
             .unwrap_or(global_layout.anchor);
@@ -448,7 +537,7 @@ impl SettingsApp {
         }
         ui.separator();
 
-        ui.heading("글자");
+        ui.heading("Text");
         let o = &self.cfg.displays[o_idx];
         let mut style = Style {
             font_family: o
@@ -472,7 +561,13 @@ impl SettingsApp {
         };
 
         let fonts = self.fonts.clone();
-        if style_fields(ui, &mut style, &fonts) {
+        if style_fields(
+            ui,
+            &mut style,
+            &fonts,
+            &mut self.font_registry,
+            &mut self.font_search,
+        ) {
             let o = &mut self.cfg.displays[o_idx];
             o.font_family = Some(style.font_family);
             o.font_weight = Some(style.font_weight);
@@ -493,9 +588,25 @@ impl SettingsApp {
 
 fn mode_label(mode: DrawMode) -> &'static str {
     match mode {
-        DrawMode::Fill => "채우기",
-        DrawMode::Outline => "외곽선",
-        DrawMode::Both => "채우기+외곽선",
+        DrawMode::Fill => "Fill",
+        DrawMode::Outline => "Outline",
+        DrawMode::Both => "Fill + Outline",
+    }
+}
+
+/// A single font family name, rendered in its own font when `usable` (i.e. the family
+/// is actually bound with egui this frame — see `FontRegistry`); otherwise rendered in
+/// the default UI font, since using `FontFamily::Name` for an unbound family panics
+/// epaint.
+fn font_rich_text(family: &str, usable: bool) -> egui::RichText {
+    let text = egui::RichText::new(family);
+    if usable {
+        text.font(egui::FontId::new(
+            16.0,
+            egui::FontFamily::Name(family.into()),
+        ))
+    } else {
+        text.size(16.0)
     }
 }
 
@@ -504,28 +615,77 @@ fn mode_label(mode: DrawMode) -> &'static str {
 /// `Style` merging the override's `Some` fields with the global defaults — see
 /// `ui_monitor`), so the widget layout and ranges only exist once. Returns whether any
 /// field changed this frame.
-fn style_fields(ui: &mut egui::Ui, style: &mut Style, fonts: &[String]) -> bool {
+///
+/// The font picker renders every family name in that family's own font (design goal:
+/// non-Latin family names, e.g. Hangul/Han/Kana font names, must not show as tofu),
+/// which requires registering each font with egui on demand (`FontRegistry::ensure`).
+/// To keep that bounded, only the currently-selected family and the rows visible in
+/// the (search-filtered, virtualized) list are ever registered in a given frame —
+/// never the whole system font list.
+fn style_fields(
+    ui: &mut egui::Ui,
+    style: &mut Style,
+    fonts: &[String],
+    font_registry: &mut FontRegistry,
+    font_search: &mut String,
+) -> bool {
     let mut changed = false;
 
-    egui::ComboBox::from_label("폰트")
-        .selected_text(style.font_family.clone())
-        .show_ui(ui, |ui| {
-            for f in fonts {
-                changed |= ui
-                    .selectable_value(&mut style.font_family, f.clone(), f)
-                    .changed();
-            }
+    let current_usable = font_registry.ensure(ui.ctx(), &style.font_family);
+    ui.horizontal(|ui| {
+        ui.label("Font:");
+        ui.label(font_rich_text(&style.font_family, current_usable));
+    });
+    egui::CollapsingHeader::new("Change font\u{2026}")
+        .id_salt("dc_font_picker")
+        .show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::singleline(font_search)
+                    .hint_text("Search fonts\u{2026}")
+                    .desired_width(f32::INFINITY),
+            );
+            let query = font_search.to_lowercase();
+            let filtered: Vec<&String> = fonts
+                .iter()
+                .filter(|f| query.is_empty() || f.to_lowercase().contains(&query))
+                .collect();
+            egui::ScrollArea::vertical()
+                .id_salt("dc_font_list_scroll")
+                .max_height(200.0)
+                // Keep the horizontal extent fixed to the parent width. Without this the
+                // scroll area shrinks to the widest *currently visible* row, and because
+                // show_rows only builds visible rows, that width — and thus the scrollbar —
+                // jitters left/right as you scroll through names of different lengths.
+                .auto_shrink([false, true])
+                .show_rows(ui, 22.0, filtered.len(), |ui, range| {
+                    // Make each row span the full width so the selection highlight and click
+                    // target don't depend on the name's length.
+                    ui.set_min_width(ui.available_width());
+                    for i in range {
+                        let family = filtered[i];
+                        let usable = font_registry.ensure(ui.ctx(), family);
+                        let selected = *family == style.font_family;
+                        if ui
+                            .selectable_label(selected, font_rich_text(family, usable))
+                            .clicked()
+                            && !selected
+                        {
+                            style.font_family = family.clone();
+                            changed = true;
+                        }
+                    }
+                });
         });
 
     changed |= ui
         .add(
             egui::Slider::new(&mut style.font_weight, 100..=900)
                 .step_by(100.0)
-                .text("굵기"),
+                .text("Weight"),
         )
         .changed();
     changed |= ui
-        .add(egui::Slider::new(&mut style.size_px, 16.0..=240.0).text("크기"))
+        .add(egui::Slider::new(&mut style.size_px, 16.0..=240.0).text("Size"))
         .changed();
 
     egui::ComboBox::from_id_salt("dc_draw_mode")
@@ -539,13 +699,13 @@ fn style_fields(ui: &mut egui::Ui, style: &mut Style, fonts: &[String]) -> bool 
         });
 
     ui.horizontal(|ui| {
-        ui.label("색:");
+        ui.label("Color:");
         let mut rgb = widgets::hex_to_rgb(&style.color);
         if ui.color_edit_button_srgb(&mut rgb).changed() {
             style.color = widgets::rgb_to_hex(rgb);
             changed = true;
         }
-        ui.label("외곽선 색:");
+        ui.label("Outline color:");
         let mut outline_rgb = widgets::hex_to_rgb(&style.outline_color);
         if ui.color_edit_button_srgb(&mut outline_rgb).changed() {
             style.outline_color = widgets::rgb_to_hex(outline_rgb);
@@ -554,20 +714,23 @@ fn style_fields(ui: &mut egui::Ui, style: &mut Style, fonts: &[String]) -> bool 
     });
 
     changed |= ui
-        .add(egui::Slider::new(&mut style.outline_width_px, 0.0..=10.0).text("외곽선 두께"))
+        .add(egui::Slider::new(&mut style.outline_width_px, 0.0..=10.0).text("Outline width"))
         .changed();
     changed |= ui
-        .add(egui::Slider::new(&mut style.opacity, 0.0..=1.0).text("불투명도"))
+        .add(egui::Slider::new(&mut style.opacity, 0.0..=1.0).text("Opacity"))
         .changed();
     changed |= ui
-        .add(egui::Slider::new(&mut style.letter_spacing_em, -0.05..=0.4).text("자간(em)"))
+        .add(
+            egui::Slider::new(&mut style.letter_spacing_em, -0.05..=0.4)
+                .text("Letter spacing (em)"),
+        )
         .changed();
-    changed |= ui.checkbox(&mut style.shadow, "그림자").changed();
+    changed |= ui.checkbox(&mut style.shadow, "Shadow").changed();
     changed |= ui
-        .checkbox(&mut style.tabular_figures, "고정폭 숫자")
+        .checkbox(&mut style.tabular_figures, "Tabular figures")
         .changed();
     changed |= ui
-        .checkbox(&mut style.show_summary_line, "요약줄 표시")
+        .checkbox(&mut style.show_summary_line, "Show summary line")
         .changed();
 
     changed
@@ -631,7 +794,43 @@ mod tests {
             last_change_ms: 0,
             cfg_path: path,
             error: None,
+            font_registry: FontRegistry::default(),
+            font_search: String::new(),
         }
+    }
+
+    // These two tests reproduce, at the unit level, the exact defect that caused a
+    // real launch of the settings window to panic during development: registering a
+    // font with `ctx.add_font` and using `FontFamily::Name` for it in the *same*
+    // frame panics epaint, because the registration only takes effect "at the start
+    // of the next pass". `FontRegistry` exists specifically to make that impossible.
+    #[test]
+    fn font_registry_defers_a_newly_queued_family_by_one_frame() {
+        let mut reg = FontRegistry::default();
+        let ctx = egui::Context::default();
+        // Arial ships on every Windows install, so `fonts::font_file` succeeds and
+        // `ctx.add_font` is called -- but it must not be reported usable yet.
+        assert!(
+            !reg.ensure(&ctx, "Arial"),
+            "a family just queued this frame must not be usable this frame"
+        );
+        reg.promote_pending();
+        assert!(
+            reg.ensure(&ctx, "Arial"),
+            "a family queued in a prior frame must be usable after promote_pending"
+        );
+    }
+
+    #[test]
+    fn font_registry_never_reports_a_failed_family_as_usable() {
+        let mut reg = FontRegistry::default();
+        let ctx = egui::Context::default();
+        assert!(!reg.ensure(&ctx, "NoSuchFamily12345XYZ"));
+        reg.promote_pending();
+        assert!(
+            !reg.ensure(&ctx, "NoSuchFamily12345XYZ"),
+            "a family with no local file must never become usable, even across frames"
+        );
     }
 
     #[test]
