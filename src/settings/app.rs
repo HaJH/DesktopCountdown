@@ -11,7 +11,15 @@ use crate::config::{self, Anchor, Config, DrawMode, Style};
 use crate::monitors;
 use crate::settings::{overrides, widgets};
 
-const DEBOUNCE_MS: u64 = 500;
+/// Minimum gap between two writes of `config.toml`.
+///
+/// The renderer redraws from that file, so this interval is what the wallpaper's
+/// responsiveness is made of. The first edit after a pause writes immediately (the gap
+/// since the last write is already larger than this), and an edit that keeps going --
+/// dragging a size or opacity slider -- writes again every `SAVE_INTERVAL_MS`, so the
+/// wallpaper follows the drag live at ~10 Hz instead of waiting for it to end. The
+/// interval is what keeps a drag from writing the file on every UI frame.
+const SAVE_INTERVAL_MS: u64 = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
@@ -31,7 +39,8 @@ pub struct SettingsApp {
     pub monitors: Vec<MonitorRef>,
     pub fonts: Vec<String>,
     pub(crate) dirty: bool,
-    pub(crate) last_change_ms: u64,
+    /// When `config.toml` was last written, for the `SAVE_INTERVAL_MS` throttle.
+    pub(crate) last_write_ms: u64,
     pub(crate) cfg_path: PathBuf,
     pub(crate) error: Option<String>,
     /// Tracks which font families are safe to render via `FontFamily::Name` (see
@@ -127,7 +136,7 @@ impl SettingsApp {
             monitors,
             fonts,
             dirty: false,
-            last_change_ms: 0,
+            last_write_ms: 0,
             cfg_path,
             error: None,
             font_registry: FontRegistry::default(),
@@ -135,7 +144,7 @@ impl SettingsApp {
         })
     }
 
-    /// Milliseconds since the Unix epoch, used as the debounce clock. Wall-clock based
+    /// Milliseconds since the Unix epoch, used as the save-throttle clock. Wall-clock based
     /// (rather than a stored `Instant` origin) so the struct stays plain-data and matches
     /// the fields the tests construct directly.
     pub fn now_ms(&self) -> u64 {
@@ -147,30 +156,34 @@ impl SettingsApp {
 
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
-        self.last_change_ms = self.now_ms();
     }
 
-    /// Saves if dirty and the debounce window has elapsed. Invalid configs are not
-    /// written; the error is surfaced instead. Never blanks the file.
+    /// Saves if there is an edit to save and the last write is at least `SAVE_INTERVAL_MS`
+    /// old. Invalid configs are not written; the error is surfaced instead. Never blanks
+    /// the file.
     pub fn save_if_due(&mut self, now_ms: u64) {
         if !crate::settings::widgets::should_save(
             self.dirty,
-            now_ms.saturating_sub(self.last_change_ms),
-            DEBOUNCE_MS,
+            now_ms.saturating_sub(self.last_write_ms),
+            SAVE_INTERVAL_MS,
         ) {
             return;
         }
-        self.write();
+        self.write(now_ms);
     }
 
-    /// Forces a save of any pending change, ignoring the debounce (used on window close).
+    /// Forces a save of any pending change, ignoring the throttle (used on window close).
     pub fn flush(&mut self) {
         if self.dirty {
-            self.write();
+            let now = self.now_ms();
+            self.write(now);
         }
     }
 
-    fn write(&mut self) {
+    fn write(&mut self, now_ms: u64) {
+        // Counts as an attempt even when it fails below: a config that does not validate
+        // stays dirty, and without this it would be re-validated on every single frame.
+        self.last_write_ms = now_ms;
         match config::validate(&self.cfg) {
             Ok(()) => match config::save(&self.cfg_path, &self.cfg) {
                 Ok(()) => {
@@ -227,8 +240,18 @@ impl eframe::App for SettingsApp {
 
         let now = self.now_ms();
         self.save_if_due(now);
-        ui.ctx()
-            .request_repaint_after(std::time::Duration::from_millis(200));
+
+        // A throttled-away edit has no other way back: egui only draws a frame when there
+        // is input or someone asks for one, and `save_if_due` only runs in a frame. Ask for
+        // exactly the frame on which the throttle interval expires -- that one writes the
+        // final value of a drag. Nothing pending means nothing to schedule, so an idle
+        // settings window sits at 0 fps instead of repainting five times a second.
+        if self.dirty {
+            let since_write = self.now_ms().saturating_sub(self.last_write_ms);
+            let wait = SAVE_INTERVAL_MS.saturating_sub(since_write).max(10);
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(wait));
+        }
     }
 
     /// Flushes any debounced-but-not-yet-written edit when the window closes, so an
@@ -791,7 +814,7 @@ mod tests {
             monitors: vec![],
             fonts: vec!["Consolas".into()],
             dirty: false,
-            last_change_ms: 0,
+            last_write_ms: 0,
             cfg_path: path,
             error: None,
             font_registry: FontRegistry::default(),
@@ -833,21 +856,51 @@ mod tests {
         );
     }
 
+    /// The edit that starts an interaction -- a click, a checkbox, the first frame of a
+    /// drag -- must reach the file at once. The old trailing debounce made every edit wait
+    /// out a quiet window first, which is what the wallpaper's lag was made of.
     #[test]
-    fn save_if_due_writes_only_after_debounce() {
-        let path = tmp_path("debounce");
+    fn the_first_edit_after_a_pause_saves_immediately() {
+        let path = tmp_path("leading");
         let mut app = app_with(path.clone());
         app.cfg.style.size_px = 123.0;
         app.mark_dirty();
-        app.last_change_ms = 1_000;
 
-        app.save_if_due(1_200); // 200ms < 500ms debounce
-        assert!(!path.exists(), "should not save before debounce elapses");
-
-        app.save_if_due(1_500); // 500ms elapsed
-        assert!(path.exists(), "should save after debounce");
+        app.save_if_due(1_000); // last write was long ago (0)
+        assert!(
+            path.exists(),
+            "the first edit must not wait for a quiet window"
+        );
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("123"), "saved file must reflect the edit");
+    }
+
+    /// ...but an interaction that keeps producing edits (a slider drag, one edit per UI
+    /// frame) must not write the file on every frame.
+    #[test]
+    fn a_continuing_edit_is_throttled_then_written() {
+        let path = tmp_path("throttle");
+        let mut app = app_with(path.clone());
+        app.mark_dirty();
+        app.save_if_due(1_000); // leading write
+        assert!(app.last_write_ms == 1_000 && !app.dirty);
+
+        app.cfg.style.size_px = 55.0;
+        app.mark_dirty();
+        app.save_if_due(1_050); // 50ms < 100ms interval
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("55"),
+            "should not write again within the interval"
+        );
+        assert!(app.dirty, "the pending edit must stay pending");
+
+        app.save_if_due(1_100); // interval elapsed
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("55"),
+            "the pending edit must be written once the interval passes"
+        );
     }
 
     #[test]
@@ -855,7 +908,6 @@ mod tests {
         let path = tmp_path("clears");
         let mut app = app_with(path);
         app.mark_dirty();
-        app.last_change_ms = 0;
         app.save_if_due(1_000);
         assert!(!app.dirty, "dirty must clear after a successful save");
     }
@@ -866,7 +918,6 @@ mod tests {
         let mut app = app_with(path.clone());
         app.cfg.style.opacity = 5.0; // out of range → validate rejects
         app.mark_dirty();
-        app.last_change_ms = 0;
         app.save_if_due(1_000);
         assert!(!path.exists(), "invalid config must not be written");
         assert!(app.error.is_some(), "an error message must be surfaced");
@@ -878,11 +929,11 @@ mod tests {
         let mut app = app_with(path.clone());
         app.cfg.style.size_px = 77.0;
         app.mark_dirty();
-        app.last_change_ms = 999_999; // debounce not elapsed by wall clock
+        app.last_write_ms = app.now_ms(); // throttle interval has not elapsed
         app.flush();
         assert!(
             path.exists(),
-            "flush must write even if debounce has not elapsed"
+            "flush must write even if the throttle interval has not elapsed"
         );
     }
 }

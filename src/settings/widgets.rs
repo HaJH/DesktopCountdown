@@ -77,9 +77,10 @@ pub fn datetime_from_fields(f: &DateFields) -> Option<DateTime> {
     DateTime::new(f.year, f.month, f.day, f.hour, f.minute, f.second, 0).ok()
 }
 
-/// The settings window saves 500 ms after the last edit, not on every frame.
-pub fn should_save(dirty: bool, ms_since_last_change: u64, debounce_ms: u64) -> bool {
-    dirty && ms_since_last_change >= debounce_ms
+/// The settings window writes an edit as soon as it happens, but no more often than once
+/// per `min_interval_ms` -- so an ongoing drag does not write the file on every UI frame.
+pub fn should_save(dirty: bool, ms_since_last_write: u64, min_interval_ms: u64) -> bool {
+    dirty && ms_since_last_write >= min_interval_ms
 }
 
 #[cfg(test)]
@@ -140,11 +141,11 @@ mod tests {
     }
 
     #[test]
-    fn should_save_only_after_debounce_and_when_dirty() {
-        assert!(!should_save(false, 9999, 500)); // not dirty
-        assert!(!should_save(true, 100, 500)); // dirty but too soon
-        assert!(should_save(true, 500, 500)); // dirty and settled (boundary)
-        assert!(should_save(true, 700, 500)); // dirty and settled
+    fn should_save_when_dirty_and_the_interval_since_the_last_write_has_passed() {
+        assert!(!should_save(false, 9999, 100)); // nothing to save
+        assert!(!should_save(true, 50, 100)); // dirty, but we wrote 50ms ago
+        assert!(should_save(true, 100, 100)); // interval elapsed (boundary)
+        assert!(should_save(true, 9999, 100)); // first edit after a long pause
     }
 
     use jiff::civil::datetime;

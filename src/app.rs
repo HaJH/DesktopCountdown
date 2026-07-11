@@ -25,6 +25,15 @@ use crate::workerw::{self, ChildWindow};
 
 const CTRL_CLASS: PCWSTR = w!("DesktopCountdownController");
 const TIMER_ID: usize = 1;
+/// One-shot timer that debounces `WM_CONFIG_DIRTY` bursts into a single `reload`.
+const RELOAD_TIMER_ID: usize = 2;
+/// Posted by `ConfigWatcher` on every filesystem event touching `config.toml`.
+const WM_CONFIG_DIRTY: u32 = WM_APP + 1;
+/// How long the config file must stay quiet before we re-read it. One save produces a
+/// short burst of events (we write a temp file and rename it over the target; an outside
+/// editor may write in several steps), so let the burst settle -- but only just: this
+/// delay is the whole latency between a settings-window edit and the wallpaper changing.
+const RELOAD_DEBOUNCE_MS: u32 = 80;
 const MIN_TIMER_MS: u32 = 20;
 /// Slow fallback poll cadence once the WorkerW retry budget is exhausted. Keeps
 /// `tick()` from calling `workerw::acquire()` (and re-logging the give-up error)
@@ -77,7 +86,7 @@ impl App {
         let target = cfg.target.to_zoned(jiff::tz::TimeZone::system())?;
         // Borrows `cfg_path` to find its parent directory, so build it before
         // `cfg_path` is moved into `App` below.
-        let watcher = ConfigWatcher::new(&cfg_path)?;
+        let watcher = ConfigWatcher::new(&cfg_path, WM_CONFIG_DIRTY)?;
 
         let painter = Painter::new()?;
         let compositor = Compositor::new(painter.d2d_factory())?;
@@ -108,6 +117,8 @@ impl App {
         // nothing below moves or drops it before the message loop (and thus the window)
         // is torn down, so the pointer stays valid for its whole lifetime.
         let hwnd = create_controller_window(&mut app)?;
+        // Only now does a window exist for the watcher's thread to post to.
+        app.watcher.notify_window(hwnd);
         unsafe { SetTimer(Some(hwnd), TIMER_ID, 100, None) };
 
         let mut msg = MSG::default();
@@ -145,14 +156,12 @@ impl App {
         Ok(())
     }
 
-    /// Re-reads `config.toml` after the watcher reports a settled change. A malformed
-    /// or out-of-range save must never blank the screen (design §6), so on failure the
+    /// Re-reads `config.toml` after the watcher reports a change. A malformed or
+    /// out-of-range save must never blank the screen (design §6), so on failure the
     /// previous config is kept untouched and only an error is logged.
     fn reload(&mut self) {
         match crate::config::load_or_create(&self.cfg_path) {
             Ok(new_cfg) => {
-                let displays_changed =
-                    new_cfg.displays != self.cfg.displays || new_cfg.layout != self.cfg.layout;
                 let target_changed = new_cfg.target != self.cfg.target;
 
                 self.cfg = new_cfg;
@@ -162,7 +171,7 @@ impl App {
                         Err(e) => tracing::error!("bad target: {e:#}"),
                     }
                 }
-                if displays_changed {
+                if self.panels_are_stale() {
                     if let Err(e) = self.rebuild_panels() {
                         tracing::error!("rebuilding panels failed: {e:#}");
                     }
@@ -180,6 +189,29 @@ impl App {
                 let _ = self.tray.set_warning(true);
             }
         }
+    }
+
+    /// Whether `self.cfg` now wants panels on a different set of monitors than we have.
+    ///
+    /// Only *that* justifies `rebuild_panels`, which destroys and recreates every window
+    /// and composition target. Style, layout, and target edits all just change what the
+    /// next `render` draws and where it places an existing window -- rebuilding for those
+    /// would tear the windows down and back up on every frame of a settings slider drag.
+    fn panels_are_stale(&self) -> bool {
+        let monitors = match monitors::enumerate() {
+            Ok(ms) => ms,
+            // Cannot tell: leave the panels alone rather than rebuild them blindly.
+            Err(e) => {
+                tracing::error!("enumerating monitors failed: {e:#}");
+                return false;
+            }
+        };
+        let wanted = monitors
+            .iter()
+            .filter(|m| effective_for(&self.cfg, &m.id).enabled)
+            .map(|m| m.id.as_str());
+        let have = self.panels.iter().map(|p| p.monitor.id.as_str());
+        !wanted.eq(have)
     }
 
     /// Runs once per `WM_TIMER`: checks WorkerW health, computes the current
@@ -200,10 +232,6 @@ impl App {
                 Err(e) => tracing::error!("current_exe failed: {e:#}"),
             },
             None => {}
-        }
-
-        if self.watcher.changed() {
-            self.reload();
         }
 
         if !workerw::is_alive(self.workerw) {
@@ -256,6 +284,13 @@ impl App {
             }
         }
 
+        self.render()
+    }
+
+    /// Computes the current countdown text and redraws only when it changed since the
+    /// last time. Split out of `tick` so a config reload can repaint straight away
+    /// instead of waiting out the rest of the current second.
+    fn render(&mut self) -> Result<()> {
         let now = Zoned::now();
         let b = breakdown(&now, &self.target);
         let lines = Lines {
@@ -267,7 +302,7 @@ impl App {
             return Ok(());
         }
 
-        tracing::debug!(summary = ?lines.summary, main = %lines.main, "tick");
+        tracing::debug!(summary = ?lines.summary, main = %lines.main, "render");
         if let Err(e) = self.draw(&lines) {
             tracing::warn!("draw failed, recreating the compositor: {e:#}");
             self.compositor = Compositor::new(self.painter.d2d_factory())?;
@@ -278,10 +313,22 @@ impl App {
         Ok(())
     }
 
+    /// Re-reads the config and repaints with it, in one go: the whole point of the
+    /// `WM_CONFIG_DIRTY` path is that an edit in the settings window shows up now, not
+    /// on the next tick.
+    fn on_config_dirty(&mut self) {
+        self.reload();
+        if let Err(e) = self.render() {
+            tracing::error!("redraw after a config reload failed: {e:#}");
+        }
+    }
+
     fn draw(&mut self, lines: &Lines) -> Result<()> {
         let workerw = self.workerw;
         let cfg = &self.cfg;
         let painter = &self.painter;
+        // Our own windows are not "covering" each other; only a foreign one counts.
+        let ours: Vec<HWND> = self.panels.iter().map(|p| p.window.hwnd()).collect();
 
         for p in &mut self.panels {
             let eff = effective_for(cfg, &p.monitor.id);
@@ -296,7 +343,7 @@ impl App {
 
             p.window.place(workerw, rect)?;
             // Another wallpaper app may have inserted itself above us since last tick.
-            p.window.raise_if_covered(workerw);
+            p.window.raise_if_covered(workerw, &ours);
 
             self.compositor.draw(&mut p.surface, w, h, |rt, origin| {
                 painter.paint(rt, lines, &eff.style, origin)
@@ -444,12 +491,27 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 /// it as a single closure without repeating the `unsafe extern "system"` signature.
 fn handle_message(app: &mut App, hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
     match msg {
+        WM_TIMER if wp.0 == RELOAD_TIMER_ID => {
+            // One-shot: the config settled RELOAD_DEBOUNCE_MS ago.
+            unsafe {
+                let _ = KillTimer(Some(hwnd), RELOAD_TIMER_ID);
+            };
+            app.on_config_dirty();
+            LRESULT(0)
+        }
         WM_TIMER => {
             if let Err(e) = app.tick() {
                 tracing::error!("tick failed: {e:#}");
             }
             let next = ms_to_next_second(Zoned::now().subsec_nanosecond() as u32);
             unsafe { SetTimer(Some(hwnd), TIMER_ID, next, None) };
+            LRESULT(0)
+        }
+        // A save is a burst of filesystem events (temp file, rename), and an outside editor
+        // may write in several steps. Restarting the timer on each one collapses the burst
+        // into a single reload once the writes stop.
+        WM_CONFIG_DIRTY => {
+            unsafe { SetTimer(Some(hwnd), RELOAD_TIMER_ID, RELOAD_DEBOUNCE_MS, None) };
             LRESULT(0)
         }
         WM_DISPLAYCHANGE | WM_DPICHANGED => {

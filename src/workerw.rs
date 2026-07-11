@@ -9,6 +9,7 @@
 //!
 //! `0x052C` asks Explorer to create the `WorkerW` if none exists; it is a no-op once one does.
 
+use std::cell::Cell;
 use std::ptr::null_mut;
 use std::sync::Once;
 
@@ -116,6 +117,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) 
 /// a plain child window's pixels are overpainted whenever Explorer redraws the wallpaper.
 pub struct ChildWindow {
     hwnd: HWND,
+    /// Client-space `(x, y, w, h)` of the last `SetWindowPos`, so `place` can skip the call
+    /// when nothing moved. See `place`.
+    placed: Cell<Option<(i32, i32, i32, i32)>>,
 }
 
 impl ChildWindow {
@@ -151,9 +155,24 @@ impl ChildWindow {
             SetParent(hwnd, Some(parent))?;
             // SetParent does not adjust the style; a reparented window must be WS_CHILD.
             SetWindowLongPtrW(hwnd, GWL_STYLE, (WS_CHILD.0 | WS_VISIBLE.0) as isize);
+            // MSDN: a style set with SetWindowLongPtr only takes effect once SetWindowPos is
+            // called with SWP_FRAMECHANGED. Once, here -- `place` runs on every redraw and
+            // must not repeat it (see `place`).
+            SetWindowPos(
+                hwnd,
+                None,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            )?;
             // MSDN: setting WS_VISIBLE via SetWindowLongPtr does not make the window appear.
             let _ = ShowWindow(hwnd, SW_SHOW);
-            Ok(Self { hwnd })
+            Ok(Self {
+                hwnd,
+                placed: Cell::new(None),
+            })
         }
     }
 
@@ -162,6 +181,19 @@ impl ChildWindow {
     }
 
     /// `rect` is in virtual-desktop screen coordinates.
+    ///
+    /// Called once per redraw, but the countdown text keeps the same extent from one
+    /// second to the next (tabular figures), so the rect is almost always identical to
+    /// last time's. Moving a window that is not moving is not free: `SetWindowPos`
+    /// invalidates the child, Explorer repaints the wallpaper underneath it, and the
+    /// DirectComposition content is only re-composited over that on a later frame --
+    /// one wallpaper-coloured frame per second, which is exactly the flicker this
+    /// early return removes. Cache the placement and only call Win32 when it changed.
+    ///
+    /// Z-order is deliberately left alone here (`SWP_NOZORDER`): it is `raise_if_covered`'s
+    /// job, and hoisting every panel to the top on every redraw re-shuffles the WorkerW's
+    /// children for no reason. `SWP_FRAMECHANGED` is likewise gone -- no frame style ever
+    /// changes after `create`, and it forces a full non-client recalculation and redraw.
     pub fn place(&self, parent: HWND, rect: Rect) -> Result<()> {
         unsafe {
             let mut o = POINT {
@@ -169,34 +201,58 @@ impl ChildWindow {
                 y: rect.y,
             };
             ScreenToClient(parent, &mut o).ok()?;
+
+            // Client-space, not screen-space: the same screen rect maps to a different
+            // client rect if the WorkerW itself moves, and that must still re-place us.
+            let want = (o.x, o.y, rect.w, rect.h);
+            if self.placed.get() == Some(want) {
+                return Ok(());
+            }
+
             SetWindowPos(
                 self.hwnd,
-                Some(HWND_TOP),
+                None,
                 o.x,
                 o.y,
                 rect.w,
                 rect.h,
-                SWP_NOACTIVATE | SWP_FRAMECHANGED,
+                SWP_NOACTIVATE | SWP_NOZORDER,
             )?;
+            self.placed.set(Some(want));
         }
         Ok(())
     }
 
     /// Other wallpaper apps (Wallpaper Engine) parent their surfaces to the same WorkerW.
-    /// Nothing guarantees we stay above them, so check and raise. Two calls; do it per tick.
-    pub fn raise_if_covered(&self, parent: HWND) {
+    /// Nothing guarantees we stay above them, so check and raise.
+    ///
+    /// `ours` is every panel's window, this one included. Only a *foreign* window above us
+    /// counts as covering us: on a multi-monitor setup we have several children under the
+    /// same WorkerW, and only one of them can be the topmost one, so a plain "am I on top?"
+    /// test would make every other panel raise itself on every redraw -- an endless
+    /// z-order shuffle among our own windows, each shuffle repainting the wallpaper.
+    pub fn raise_if_covered(&self, parent: HWND, ours: &[HWND]) {
         unsafe {
-            if GetWindow(parent, GW_CHILD).ok() != Some(self.hwnd) {
-                let _ = SetWindowPos(
-                    self.hwnd,
-                    Some(HWND_TOP),
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
-                );
+            // Walk the WorkerW's children from the topmost one down to ours.
+            let mut cur = GetWindow(parent, GW_CHILD).ok();
+            while let Some(h) = cur {
+                if h == self.hwnd {
+                    return; // nothing foreign above us
+                }
+                if !ours.contains(&h) {
+                    break; // a foreign window is above us
+                }
+                cur = GetWindow(h, GW_HWNDNEXT).ok();
             }
+            let _ = SetWindowPos(
+                self.hwnd,
+                Some(HWND_TOP),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE,
+            );
         }
     }
 }
