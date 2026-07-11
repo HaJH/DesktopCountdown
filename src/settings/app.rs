@@ -652,7 +652,15 @@ fn style_fields(
             egui::ScrollArea::vertical()
                 .id_salt("dc_font_list_scroll")
                 .max_height(200.0)
+                // Keep the horizontal extent fixed to the parent width. Without this the
+                // scroll area shrinks to the widest *currently visible* row, and because
+                // show_rows only builds visible rows, that width — and thus the scrollbar —
+                // jitters left/right as you scroll through names of different lengths.
+                .auto_shrink([false, true])
                 .show_rows(ui, 22.0, filtered.len(), |ui, range| {
+                    // Make each row span the full width so the selection highlight and click
+                    // target don't depend on the name's length.
+                    ui.set_min_width(ui.available_width());
                     for i in range {
                         let family = filtered[i];
                         let usable = font_registry.ensure(ui.ctx(), family);
