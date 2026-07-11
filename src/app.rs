@@ -332,7 +332,11 @@ impl App {
 
         for p in &mut self.panels {
             let eff = effective_for(cfg, &p.monitor.id);
-            let (w, h) = painter.measure(lines, &eff.style)?;
+            // Laying the text out is the expensive half of a redraw (glyph outlines, see
+            // `render::ink_span`); do it once and let both the sizing and the painting
+            // below read from it.
+            let composed = painter.compose(lines, &eff.style)?;
+            let (w, h) = composed.size();
             let rect = place(
                 p.monitor.rect,
                 w as i32,
@@ -346,7 +350,7 @@ impl App {
             p.window.raise_if_covered(workerw, &ours);
 
             self.compositor.draw(&mut p.surface, w, h, |rt, origin| {
-                painter.paint(rt, lines, &eff.style, origin)
+                painter.paint(rt, &composed, &eff.style, origin)
             })?;
         }
         Ok(())

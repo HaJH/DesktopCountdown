@@ -14,7 +14,8 @@ use crate::color::parse_hex;
 use crate::config::{DrawMode, Style};
 use text::TextEngine;
 
-/// Gap between the summary line and the main line, as a fraction of `size_px`.
+/// Gap between the summary line's ink and the main line's ink, as a fraction of `size_px`.
+/// Ink, not line box: see `ink_span`.
 const LINE_GAP_RATIO: f32 = 0.12;
 /// Summary line em size, as a fraction of `size_px`.
 const SUMMARY_RATIO: f32 = 0.28;
@@ -33,16 +34,65 @@ pub struct Painter {
     text: TextEngine,
 }
 
-/// Everything `measure` computes that `paint` also needs.
-struct Composed {
-    main: IDWriteTextLayout,
-    main_w: f32,
-    summary: Option<(IDWriteTextLayout, f32, f32)>,
+/// One line, ready to draw: its layout, the advance width used to centre it, and where
+/// its ink sits inside its line box (see `ink_span`).
+struct Line {
+    layout: IDWriteTextLayout,
+    width: f32,
+    /// Distance from the layout box's top edge down to the first inked pixel.
+    ink_top: f32,
+    /// Height of the inked pixels themselves.
+    ink_h: f32,
+}
+
+/// A laid-out pair of lines and the canvas they need. Built once per redraw by `compose`;
+/// `size` sizes the composition surface and `paint` draws it. Held by the caller between
+/// the two so the (not free -- see `ink_span`) layout work happens once, not twice.
+pub struct Composed {
+    main: Line,
+    summary: Option<Line>,
     pad: f32,
     gap: f32,
     content_w: f32,
     width: u32,
     height: u32,
+}
+
+impl Composed {
+    pub fn size(&self) -> (u32, u32) {
+        (self.width, self.height)
+    }
+}
+
+/// Where `layout`'s ink actually is: `(top, height)`, measured from the top edge of its
+/// line box.
+///
+/// `DWRITE_TEXT_METRICS::height` is the *line box* -- ascent + descent + line gap -- which
+/// is a property of the font, not of the string. A CJK font sizes its ascent to hold
+/// Hangul and Han (Noto Sans Mono CJK: 1.16em) while digits only reach the cap height
+/// (~0.7em), so a line of digits floats with ~0.46em of nothing above it. Stacking two
+/// such boxes puts ~0.6em of dead space between the two lines' glyphs, five times the gap
+/// this module thinks it is leaving. Measuring the ink instead makes `LINE_GAP_RATIO` mean
+/// what it says, in any font.
+///
+/// The bounds come from the glyph outlines (the same ones `DrawMode::Outline` strokes), so
+/// they are exact for the actual string.  `IDWriteTextLayout::GetOverhangMetrics` would be
+/// cheaper but reports the font's global glyph box, not this string's -- it claims ink
+/// 2.6x below the line box for both fonts tested here, which is useless for fitting.
+///
+/// A string with no ink at all (all spaces) falls back to the line box.
+fn ink_span(d2d: &ID2D1Factory1, layout: &IDWriteTextLayout, box_h: f32) -> Result<(f32, f32)> {
+    let mut top = f32::MAX;
+    let mut bottom = f32::MIN;
+    for geom in outline::collect_geometry(d2d, layout, 0.0, 0.0)? {
+        let b = unsafe { geom.GetBounds(None)? };
+        top = top.min(b.top);
+        bottom = bottom.max(b.bottom);
+    }
+    if top > bottom {
+        return Ok((0.0, box_h));
+    }
+    Ok((top, bottom - top))
 }
 
 impl Painter {
@@ -61,26 +111,17 @@ impl Painter {
     }
 
     pub fn measure(&self, lines: &Lines, style: &Style) -> Result<(u32, u32)> {
-        let c = self.compose(lines, style)?;
-        Ok((c.width, c.height))
+        Ok(self.compose(lines, style)?.size())
     }
 
-    fn compose(&self, lines: &Lines, style: &Style) -> Result<Composed> {
+    /// Lays both lines out and sizes the canvas they need. Vertically the canvas holds the
+    /// two lines' *ink* plus the gap between them, not their line boxes -- see `ink_span`.
+    pub fn compose(&self, lines: &Lines, style: &Style) -> Result<Composed> {
         let family = self.text.resolve_family(&style.font_family);
 
-        let main = self
-            .text
-            .layout(&lines.main, &family, style, style.size_px)?;
-        let (main_w, main_h) = TextEngine::measure(&main)?;
-
+        let main = self.line(&lines.main, &family, style, style.size_px)?;
         let summary = match (&lines.summary, style.show_summary_line) {
-            (Some(s), true) => {
-                let l = self
-                    .text
-                    .layout(s, &family, style, style.size_px * SUMMARY_RATIO)?;
-                let (w, h) = TextEngine::measure(&l)?;
-                Some((l, w, h))
-            }
+            (Some(s), true) => Some(self.line(s, &family, style, style.size_px * SUMMARY_RATIO)?),
             _ => None,
         };
 
@@ -89,20 +130,19 @@ impl Painter {
         } else {
             0.0
         };
-        let sum_w = summary.as_ref().map(|s| s.1).unwrap_or(0.0);
-        let sum_h = summary.as_ref().map(|s| s.2).unwrap_or(0.0);
+        let sum_w = summary.as_ref().map(|s| s.width).unwrap_or(0.0);
+        let sum_ink_h = summary.as_ref().map(|s| s.ink_h).unwrap_or(0.0);
 
         let pad = (style.outline_width_px.max(0.0)
             + 4.0
             + if style.shadow { SHADOW_OFFSET } else { 0.0 })
         .ceil();
 
-        let content_w = main_w.max(sum_w);
-        let content_h = sum_h + gap + main_h;
+        let content_w = main.width.max(sum_w);
+        let content_h = sum_ink_h + gap + main.ink_h;
 
         Ok(Composed {
             main,
-            main_w,
             summary,
             pad,
             gap,
@@ -112,16 +152,27 @@ impl Painter {
         })
     }
 
+    fn line(&self, text: &str, family: &str, style: &Style, size_px: f32) -> Result<Line> {
+        let layout = self.text.layout(text, family, style, size_px)?;
+        let (width, box_h) = TextEngine::measure(&layout)?;
+        let (ink_top, ink_h) = ink_span(&self.d2d, &layout, box_h)?;
+        Ok(Line {
+            layout,
+            width,
+            ink_top,
+            ink_h,
+        })
+    }
+
     /// `origin` is the surface offset from `IDCompositionSurface::BeginDraw`.
     /// The caller owns BeginDraw/EndDraw on `rt`.
     pub fn paint(
         &self,
         rt: &ID2D1RenderTarget,
-        lines: &Lines,
+        c: &Composed,
         style: &Style,
         origin: (f32, f32),
     ) -> Result<()> {
-        let c = self.compose(lines, style)?;
         let (ox, oy) = origin;
         let alpha = style.opacity.clamp(0.0, 1.0);
 
@@ -144,7 +195,7 @@ impl Painter {
                 a: 0.0,
             }));
 
-            let result = self.paint_inner(rt, &c, style, ox, oy, alpha);
+            let result = self.paint_inner(rt, c, style, ox, oy, alpha);
 
             // Pop on every path, including an error from paint_inner, so a failed
             // paint never leaves the render target's clip stack unbalanced.
@@ -170,12 +221,16 @@ impl Painter {
         let line = self.brush(rt, &style.outline_color, alpha)?;
         let shadow = self.brush(rt, "#000000", SHADOW_ALPHA * alpha)?;
 
-        let sum_w = c.summary.as_ref().map(|s| s.1).unwrap_or(0.0);
-        let sum_h = c.summary.as_ref().map(|s| s.2).unwrap_or(0.0);
+        let sum_w = c.summary.as_ref().map(|s| s.width).unwrap_or(0.0);
+        let sum_ink_h = c.summary.as_ref().map(|s| s.ink_h).unwrap_or(0.0);
         let sum_x = ox + c.pad + (c.content_w - sum_w) / 2.0;
-        let main_x = ox + c.pad + (c.content_w - c.main_w) / 2.0;
-        let sum_y = oy + c.pad;
-        let main_y = oy + c.pad + sum_h + c.gap;
+        let main_x = ox + c.pad + (c.content_w - c.main.width) / 2.0;
+
+        // `DrawTextLayout` takes the layout box's top-left, but the canvas was sized to the
+        // ink. Shift each line up by the dead space above its own ink so the ink lands where
+        // the layout put it: summary ink at the top pad, main ink one gap below it.
+        let sum_y = oy + c.pad - c.summary.as_ref().map(|s| s.ink_top).unwrap_or(0.0);
+        let main_y = oy + c.pad + sum_ink_h + c.gap - c.main.ink_top;
 
         if style.shadow {
             // Both fill and stroke draw in the shadow colour here, otherwise an
@@ -213,10 +268,10 @@ impl Painter {
     ) -> Result<()> {
         if matches!(style.mode, DrawMode::Fill | DrawMode::Both) {
             unsafe {
-                if let Some((l, _, _)) = &c.summary {
+                if let Some(s) = &c.summary {
                     rt.DrawTextLayout(
                         Vector2 { X: sum_x, Y: sum_y },
-                        l,
+                        &s.layout,
                         fill,
                         D2D1_DRAW_TEXT_OPTIONS_NONE,
                     );
@@ -226,17 +281,24 @@ impl Painter {
                         X: main_x,
                         Y: main_y,
                     },
-                    &c.main,
+                    &c.main.layout,
                     fill,
                     D2D1_DRAW_TEXT_OPTIONS_NONE,
                 );
             }
         }
         if matches!(style.mode, DrawMode::Outline | DrawMode::Both) {
-            if let Some((l, _, _)) = &c.summary {
-                self.stroke_layout(rt, l, sum_x, sum_y, stroke, style.outline_width_px)?;
+            if let Some(s) = &c.summary {
+                self.stroke_layout(rt, &s.layout, sum_x, sum_y, stroke, style.outline_width_px)?;
             }
-            self.stroke_layout(rt, &c.main, main_x, main_y, stroke, style.outline_width_px)?;
+            self.stroke_layout(
+                rt,
+                &c.main.layout,
+                main_x,
+                main_y,
+                stroke,
+                style.outline_width_px,
+            )?;
         }
         Ok(())
     }
@@ -317,11 +379,12 @@ mod tests {
 
     /// Draws `lines` and returns the tightly packed premultiplied BGRA pixels.
     fn draw(p: &Painter, lines: &Lines, style: &Style) -> (Vec<u8>, u32, u32) {
-        let (w, h) = p.measure(lines, style).unwrap();
+        let composed = p.compose(lines, style).unwrap();
+        let (w, h) = composed.size();
         let (bitmap, rt) = canvas(p, w, h);
         unsafe {
             rt.BeginDraw();
-            p.paint(&rt, lines, style, (0.0, 0.0)).unwrap();
+            p.paint(&rt, &composed, style, (0.0, 0.0)).unwrap();
             rt.EndDraw(None, None).unwrap();
 
             let rect = WICRect {
@@ -383,6 +446,70 @@ mod tests {
         assert!(w > 0 && h > 0);
         assert!(coverage(&px, w, h) > 0.01, "nothing was drawn");
         assert!(coverage(&px, w, h) < 0.9, "canvas is almost fully opaque");
+    }
+
+    /// The vertical extent of a row of pixels that has no ink at all, between the summary
+    /// line's ink and the main line's ink. This is the gap a person actually sees.
+    fn empty_rows_between_lines(px: &[u8], w: u32, h: u32) -> u32 {
+        let inked = |y: u32| (0..w).any(|x| px[((y * w + x) * 4 + 3) as usize] != 0);
+        let first = (0..h).find(|&y| inked(y)).expect("no ink at all");
+        // Skip the summary's own rows, then count the empty ones before the main line.
+        let after_summary = (first..h)
+            .find(|&y| !inked(y))
+            .expect("only one band of ink");
+        (after_summary..h).take_while(|&y| !inked(y)).count() as u32
+    }
+
+    /// The gap between the two lines must be the gap this module says it leaves, in any
+    /// font. It used to be the gap *plus* whatever dead space the font's ascent and descent
+    /// left around the glyphs -- ~5x too much in a CJK font, whose ascent is sized for
+    /// Hangul while the countdown only ever draws digits.
+    #[test]
+    fn the_visible_gap_between_the_lines_is_the_configured_gap() {
+        let p = Painter::new().unwrap();
+        for family in ["Consolas", "Malgun Gothic"] {
+            let size = 200.0;
+            let style = Style {
+                font_family: family.into(),
+                size_px: size,
+                shadow: false,
+                outline_width_px: 0.0,
+                ..Style::default()
+            };
+            let (px, w, h) = draw(&p, &lines(), &style);
+            let gap = empty_rows_between_lines(&px, w, h) as f32;
+            let want = size * LINE_GAP_RATIO;
+            assert!(
+                (gap - want).abs() <= 2.0,
+                "{family}: visible gap was {gap}px, expected {want}px"
+            );
+        }
+    }
+
+    /// ...and the same dead space must not pad the canvas itself: the ink starts at the top
+    /// padding and ends at the bottom padding.
+    #[test]
+    fn the_canvas_hugs_the_ink_vertically() {
+        let p = Painter::new().unwrap();
+        let style = Style {
+            font_family: "Malgun Gothic".into(),
+            size_px: 200.0,
+            shadow: false,
+            outline_width_px: 0.0,
+            ..Style::default()
+        };
+        let (px, w, h) = draw(&p, &lines(), &style);
+        let (_, y0, _, y1) = ink_bbox(&px, w, h);
+        let pad = 4.0; // outline 0 + 4 + no shadow
+        assert!(
+            (y0 as f32 - pad).abs() <= 1.0,
+            "ink starts {y0}px down, expected {pad}px of padding"
+        );
+        assert!(
+            ((h - 1 - y1) as f32 - pad).abs() <= 1.0,
+            "ink ends {}px from the bottom, expected {pad}px of padding",
+            h - 1 - y1
+        );
     }
 
     #[test]

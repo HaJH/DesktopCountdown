@@ -98,7 +98,7 @@ eframe 0.35 네이티브 창 하나. 세로로 세 영역:
 | `target` | 년/월/일/시/분/초 `DragValue` 6개 | jiff 파싱 실패 시 빨간 경고, 저장 안 함 |
 | `style.font_family` | `ComboBox` | 시스템 폰트 목록(§7) |
 | `style.font_weight` | `Slider` | 100–900, step 100 |
-| `style.size_px` | `Slider` | 16–240 |
+| `style.size_px` | `Slider` | 16–512 |
 | `style.mode` | `ComboBox` | fill / outline / both |
 | `style.color` | egui 색 피커 | `#RRGGBB` ↔ `[u8;3]` 변환 |
 | `style.outline_color` | egui 색 피커 | 〃 |
@@ -108,6 +108,13 @@ eframe 0.35 네이티브 창 하나. 세로로 세 영역:
 | `style.shadow` | `Checkbox` | |
 | `style.tabular_figures` | `Checkbox` | |
 | `style.show_summary_line` | `Checkbox` | |
+
+슬라이더 범위는 `config::validate`가 허용하는 범위보다 좁다(예: `size_px`는 0보다 크기만 하면 되고,
+`outline_width_px`는 0 이상, `letter_spacing_em`은 유한하기만 하면 된다). egui 슬라이더의 기본
+클램프 모드(`SliderClamping::Always`)는 넘겨받은 값 자체를 범위 안으로 고쳐버리므로, 사용자가
+`config.toml`에 손으로 쓴 `size_px = 800`이 설정 창을 여는 것만으로 조용히 512로 잘린다. 그래서
+범위가 validate보다 좁은 슬라이더는 `SliderClamping::Edits`를 쓴다 — 창에서 조작·입력한 값만
+범위로 자르고, 파일에서 읽어온 값은 그대로 둔다.
 | `layout.anchor` | 3×3 버튼 그리드 | 선택된 방향 하이라이트 |
 | `layout.offset_px` | `DragValue` 2개 | x, y (±픽셀) |
 | `general.autostart` | `Checkbox` | 전역 전용 |

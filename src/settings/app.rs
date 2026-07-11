@@ -707,8 +707,18 @@ fn style_fields(
                 .text("Weight"),
         )
         .changed();
+    // `SliderClamping::Edits`, not egui's default `Always`: these three sliders are narrower
+    // than what `config::validate` accepts (any size > 0, any outline width >= 0, any finite
+    // letter spacing), and `Always` rewrites the value it is given to fit the slider -- so
+    // merely opening this window would silently cut a `size_px = 800` hand-written in
+    // config.toml down to the slider's maximum. `Edits` clamps what the user drags or types
+    // here, and leaves a value that came from the file alone.
     changed |= ui
-        .add(egui::Slider::new(&mut style.size_px, 16.0..=240.0).text("Size"))
+        .add(
+            egui::Slider::new(&mut style.size_px, 16.0..=512.0)
+                .clamping(egui::SliderClamping::Edits)
+                .text("Size"),
+        )
         .changed();
 
     egui::ComboBox::from_id_salt("dc_draw_mode")
@@ -737,7 +747,11 @@ fn style_fields(
     });
 
     changed |= ui
-        .add(egui::Slider::new(&mut style.outline_width_px, 0.0..=10.0).text("Outline width"))
+        .add(
+            egui::Slider::new(&mut style.outline_width_px, 0.0..=10.0)
+                .clamping(egui::SliderClamping::Edits)
+                .text("Outline width"),
+        )
         .changed();
     changed |= ui
         .add(egui::Slider::new(&mut style.opacity, 0.0..=1.0).text("Opacity"))
@@ -745,6 +759,7 @@ fn style_fields(
     changed |= ui
         .add(
             egui::Slider::new(&mut style.letter_spacing_em, -0.05..=0.4)
+                .clamping(egui::SliderClamping::Edits)
                 .text("Letter spacing (em)"),
         )
         .changed();
