@@ -3,6 +3,13 @@ name = "desktop-countdown"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.92"
+description = "A countdown drawn onto the Windows wallpaper layer, under the desktop icons"
+authors = ["Jeonghyeon Ha <hajh0104@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/HaJH/DesktopCountdown"
+keywords = ["countdown", "wallpaper", "desktop", "windows", "directcomposition"]
+categories = ["gui", "os::windows-apis"]
 
 [lib]
 name = "desktop_countdown"
