@@ -59,16 +59,6 @@ pub fn breakdown(now: &Zoned, target: &Zoned) -> Breakdown {
     }
 }
 
-/// `"2544:18:07"` — hours are zero-padded to at least two digits and grow freely.
-pub fn format_main(b: &Breakdown) -> String {
-    format!("{:02}:{:02}:{:02}", b.total_hours, b.minutes, b.seconds)
-}
-
-/// `"3m 2w 0d"` — auxiliary summary. Months are unbounded; years are never used.
-pub fn format_summary(b: &Breakdown) -> String {
-    format!("{}m {}w {}d", b.months, b.weeks, b.days)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -82,6 +72,16 @@ mod tests {
         datetime(y, m, d, h, mi, s, 0)
             .to_zoned(TimeZone::fixed(offset(9)))
             .unwrap()
+    }
+
+    /// The two templates the default config ships with (`config::MAIN_TEMPLATE` /
+    /// `SUMMARY_TEMPLATE`). The formats live in `crate::tokens` now; these keep the
+    /// arithmetic below readable.
+    fn format_main(b: &Breakdown) -> String {
+        crate::tokens::render("{hh}:{mm}:{ss}", b)
+    }
+    fn format_summary(b: &Breakdown) -> String {
+        crate::tokens::render("{months}m {weeks}w {days}d", b)
     }
 
     #[test]

@@ -34,18 +34,19 @@ pub fn has_style_override(o: &DisplayOverride) -> bool {
         || o.letter_spacing_em.is_some()
         || o.shadow.is_some()
         || o.tabular_figures.is_some()
-        || o.show_summary_line.is_some()
+        || o.lines.is_some()
 }
 
 pub fn set_enabled(cfg: &mut Config, id: &str, name: &str, enabled: bool) {
     find_or_create(cfg, id, name).enabled = Some(enabled);
 }
 
-/// Copies the global style + layout into the monitor's override so the user can
+/// Copies the global style + layout + line list into the monitor's override so the user can
 /// tweak from the current appearance rather than from blank defaults.
 pub fn enable_style_override(cfg: &mut Config, id: &str, name: &str) {
     let g_style = cfg.style.clone();
     let g_layout = cfg.layout.clone();
+    let g_lines = cfg.lines.clone();
     let o = find_or_create(cfg, id, name);
     o.anchor = Some(g_layout.anchor);
     o.offset_px = Some(g_layout.offset_px);
@@ -60,7 +61,7 @@ pub fn enable_style_override(cfg: &mut Config, id: &str, name: &str) {
     o.letter_spacing_em = Some(g_style.letter_spacing_em);
     o.shadow = Some(g_style.shadow);
     o.tabular_figures = Some(g_style.tabular_figures);
-    o.show_summary_line = Some(g_style.show_summary_line);
+    o.lines = Some(g_lines);
 }
 
 /// Clears the style/anchor/offset fields (monitor follows global again), keeps `enabled`,
@@ -80,7 +81,7 @@ pub fn disable_style_override(cfg: &mut Config, id: &str) {
         o.letter_spacing_em = None;
         o.shadow = None;
         o.tabular_figures = None;
-        o.show_summary_line = None;
+        o.lines = None;
     }
     // Prune entries that now hold only id (+name): no enabled, no style.
     cfg.displays
@@ -193,7 +194,7 @@ mod tests {
             |o| o.letter_spacing_em = Some(0.0),
             |o| o.shadow = Some(true),
             |o| o.tabular_figures = Some(true),
-            |o| o.show_summary_line = Some(true),
+            |o| o.lines = Some(crate::config::default_lines(true)),
         ];
         for (i, set) in setters.iter().enumerate() {
             let mut o = base.clone();

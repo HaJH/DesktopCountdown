@@ -13,12 +13,13 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::*;
 
 use crate::backoff::Backoff;
-use crate::config::{effective_for, Config};
-use crate::countdown::{breakdown, format_main, format_summary};
+use crate::config::{effective_for, Config, Line};
+use crate::countdown::breakdown;
 use crate::dcomp::{Compositor, Surface};
 use crate::layout::place;
 use crate::monitors::{self, MonitorInfo};
-use crate::render::{Lines, Painter};
+use crate::render::Painter;
+use crate::tokens;
 use crate::tray::{Tray, TrayCommand};
 use crate::watch::ConfigWatcher;
 use crate::workerw::{self, ChildWindow};
@@ -64,7 +65,10 @@ pub struct App {
     compositor: Compositor,
     workerw: HWND,
     panels: Vec<Panel>,
-    last_lines: Option<Lines>,
+    /// The lines actually drawn last time, per panel (a monitor override can give a monitor
+    /// its own list). Compared against the freshly resolved ones to skip a redraw that would
+    /// paint the same pixels.
+    last_lines: Option<Vec<Vec<Line>>>,
     workerw_backoff: Backoff,
     /// `None` means "retry now"; `Some(at)` means "wait out the backoff until `at`".
     retry_at: Option<std::time::Instant>,
@@ -293,24 +297,44 @@ impl App {
     fn render(&mut self) -> Result<()> {
         let now = Zoned::now();
         let b = breakdown(&now, &self.target);
-        let lines = Lines {
-            summary: Some(format_summary(&b)),
-            main: format_main(&b),
-        };
+        let resolved = self.resolve(&b);
 
-        if self.last_lines.as_ref() == Some(&lines) {
+        if self.last_lines.as_ref() == Some(&resolved) {
             return Ok(());
         }
 
-        tracing::debug!(summary = ?lines.summary, main = %lines.main, "render");
-        if let Err(e) = self.draw(&lines) {
+        tracing::debug!(?resolved, "render");
+        if let Err(e) = self.draw(&resolved) {
             tracing::warn!("draw failed, recreating the compositor: {e:#}");
             self.compositor = Compositor::new(self.painter.d2d_factory())?;
             self.rebuild_panels()?; // targets are bound to HWNDs; rebuild them too
-            self.draw(&lines)?; // one retry; a second failure propagates
+            // The rebuild may have changed how many panels there are, so the lines must be
+            // resolved against the new set -- `draw` walks the two in lockstep.
+            let resolved = self.resolve(&b);
+            self.draw(&resolved)?; // one retry; a second failure propagates
+            self.last_lines = Some(resolved);
+            return Ok(());
         }
-        self.last_lines = Some(lines);
+        self.last_lines = Some(resolved);
         Ok(())
+    }
+
+    /// One line list per panel, with the templates substituted. Per panel and not once for
+    /// all of them because a monitor override can carry its own list.
+    fn resolve(&self, b: &crate::countdown::Breakdown) -> Vec<Vec<Line>> {
+        self.panels
+            .iter()
+            .map(|p| {
+                effective_for(&self.cfg, &p.monitor.id)
+                    .lines
+                    .into_iter()
+                    .map(|l| Line {
+                        text: tokens::render(&l.text, b),
+                        ..l
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     /// Re-reads the config and repaints with it, in one go: the whole point of the
@@ -323,14 +347,14 @@ impl App {
         }
     }
 
-    fn draw(&mut self, lines: &Lines) -> Result<()> {
+    fn draw(&mut self, resolved: &[Vec<Line>]) -> Result<()> {
         let workerw = self.workerw;
         let cfg = &self.cfg;
         let painter = &self.painter;
         // Our own windows are not "covering" each other; only a foreign one counts.
         let ours: Vec<HWND> = self.panels.iter().map(|p| p.window.hwnd()).collect();
 
-        for p in &mut self.panels {
+        for (p, lines) in self.panels.iter_mut().zip(resolved) {
             let eff = effective_for(cfg, &p.monitor.id);
             // Laying the text out is the expensive half of a redraw (glyph outlines, see
             // `render::ink_span`); do it once and let both the sizing and the painting

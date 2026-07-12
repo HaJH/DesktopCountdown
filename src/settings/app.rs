@@ -21,6 +21,10 @@ use crate::settings::{overrides, widgets};
 /// interval is what keeps a drag from writing the file on every UI frame.
 const SAVE_INTERVAL_MS: u64 = 100;
 
+/// The preview's font size for a line whose `size_ratio` is 1.0. The preview shows the lines'
+/// relative sizes, not their real pixel sizes -- the panel is far smaller than a monitor.
+const PREVIEW_BASE_PX: f32 = 28.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Target {
     Global,
@@ -286,43 +290,43 @@ impl SettingsApp {
         });
     }
 
-    /// Approximate desktop preview: an egui-drawn dark panel tinted by the effective
-    /// colour of the current edit target. Not a pixel match for the real DirectWrite
-    /// renderer (design §4) — just a sense of colour/size/summary-line-on-off.
+    /// Approximate desktop preview: an egui-drawn dark panel showing the effective line list
+    /// with each line's relative size, colour and alignment. Not a pixel match for the real
+    /// DirectWrite renderer (design §4) — just a sense of the composition.
     fn ui_preview(&self, ui: &mut egui::Ui) {
         ui.heading("Preview");
 
-        let eff = match self.target {
-            Target::Global => config::Effective {
-                enabled: true,
-                anchor: self.cfg.layout.anchor,
-                offset_px: self.cfg.layout.offset_px,
-                style: self.cfg.style.clone(),
-            },
-            Target::Monitor(i) => match self.monitors.get(i) {
-                Some(m) => config::effective_for(&self.cfg, &m.id),
-                None => config::Effective {
-                    enabled: true,
-                    anchor: self.cfg.layout.anchor,
-                    offset_px: self.cfg.layout.offset_px,
-                    style: self.cfg.style.clone(),
-                },
-            },
-        };
-
-        let rgb = widgets::hex_to_rgb(&eff.style.color);
-        let text_color = egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2]);
-        let (summary, main) = self.preview_lines();
+        let eff = self.effective();
+        let b = self.preview_breakdown();
 
         egui::Frame::NONE
             .fill(egui::Color32::from_rgb(24, 24, 24))
             .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
                 ui.set_min_width(180.0);
-                if eff.style.show_summary_line {
-                    ui.colored_label(text_color, &summary);
+                for l in &eff.lines {
+                    let text = crate::tokens::render(&l.text, &b);
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let rgb = widgets::hex_to_rgb(l.color.as_deref().unwrap_or(&eff.style.color));
+                    // Sized against a fixed base, not against `size_px`: the preview panel is
+                    // a fraction of a monitor's width, so what can be shown faithfully is how
+                    // the lines relate to each other, not their real pixel sizes.
+                    let px = (l.size_ratio * PREVIEW_BASE_PX).clamp(8.0, 40.0);
+                    let align = match l.align {
+                        config::Align::Left => egui::Align::LEFT,
+                        config::Align::Center => egui::Align::Center,
+                        config::Align::Right => egui::Align::RIGHT,
+                    };
+                    ui.with_layout(egui::Layout::top_down(align), |ui| {
+                        ui.label(
+                            egui::RichText::new(text)
+                                .size(px)
+                                .color(egui::Color32::from_rgb(rgb[0], rgb[1], rgb[2])),
+                        );
+                    });
                 }
-                ui.colored_label(text_color, &main);
             });
 
         ui.add_space(6.0);
@@ -335,20 +339,33 @@ impl SettingsApp {
         }
     }
 
-    /// The countdown text for the preview, computed from the real target/now so the
-    /// preview is a genuine (if approximately rendered) countdown, not a static mock.
-    /// Falls back to zeroed placeholders if `target` cannot be resolved in the local
-    /// time zone (e.g. an out-of-range year) rather than panicking.
-    fn preview_lines(&self) -> (String, String) {
+    /// The effective config for whatever the user is currently editing.
+    fn effective(&self) -> config::Effective {
+        let global = || config::Effective {
+            enabled: true,
+            anchor: self.cfg.layout.anchor,
+            offset_px: self.cfg.layout.offset_px,
+            style: self.cfg.style.clone(),
+            lines: self.cfg.lines.clone(),
+        };
+        match self.target {
+            Target::Global => global(),
+            Target::Monitor(i) => match self.monitors.get(i) {
+                Some(m) => config::effective_for(&self.cfg, &m.id),
+                None => global(),
+            },
+        }
+    }
+
+    /// The countdown the preview renders, from the real target/now so the preview is a
+    /// genuine (if approximately rendered) countdown, not a static mock. Falls back to an
+    /// expired countdown if `target` cannot be resolved in the local time zone (e.g. an
+    /// out-of-range year) rather than panicking.
+    fn preview_breakdown(&self) -> crate::countdown::Breakdown {
+        let now = jiff::Zoned::now();
         match self.cfg.target.to_zoned(jiff::tz::TimeZone::system()) {
-            Ok(target) => {
-                let b = crate::countdown::breakdown(&jiff::Zoned::now(), &target);
-                (
-                    crate::countdown::format_summary(&b),
-                    crate::countdown::format_main(&b),
-                )
-            }
-            Err(_) => ("0m 0w 0d".to_string(), "00:00:00".to_string()),
+            Ok(target) => crate::countdown::breakdown(&now, &target),
+            Err(_) => crate::countdown::breakdown(&now, &now),
         }
     }
 
@@ -580,7 +597,8 @@ impl SettingsApp {
             letter_spacing_em: o.letter_spacing_em.unwrap_or(globals.letter_spacing_em),
             shadow: o.shadow.unwrap_or(globals.shadow),
             tabular_figures: o.tabular_figures.unwrap_or(globals.tabular_figures),
-            show_summary_line: o.show_summary_line.unwrap_or(globals.show_summary_line),
+            // Legacy, migrated away on load and never written back; no widget touches it.
+            show_summary_line: None,
         };
 
         let fonts = self.fonts.clone();
@@ -603,7 +621,6 @@ impl SettingsApp {
             o.letter_spacing_em = Some(style.letter_spacing_em);
             o.shadow = Some(style.shadow);
             o.tabular_figures = Some(style.tabular_figures);
-            o.show_summary_line = Some(style.show_summary_line);
             self.mark_dirty();
         }
     }
@@ -766,9 +783,6 @@ fn style_fields(
     changed |= ui.checkbox(&mut style.shadow, "Shadow").changed();
     changed |= ui
         .checkbox(&mut style.tabular_figures, "Tabular figures")
-        .changed();
-    changed |= ui
-        .checkbox(&mut style.show_summary_line, "Show summary line")
         .changed();
 
     changed

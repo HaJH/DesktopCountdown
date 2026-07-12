@@ -17,8 +17,9 @@ pub fn load_or_create(path: &Path) -> Result<Config> {
     }
     let text =
         std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    let cfg: Config =
+    let mut cfg: Config =
         toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    super::migrate(&mut cfg);
     validate(&cfg)?;
     Ok(cfg)
 }
@@ -78,6 +79,18 @@ mod tests {
         .unwrap();
         let cfg = load_or_create(&p).unwrap();
         assert_eq!(cfg.style.size_px, 99.0);
+    }
+
+    #[test]
+    fn a_legacy_file_without_lines_gains_the_classic_list_on_load() {
+        let p = tmp("legacy");
+        fs::write(
+            &p,
+            "target = \"2030-01-01T00:00:00\"\n[style]\nshow_summary_line = false\n",
+        )
+        .unwrap();
+        let cfg = load_or_create(&p).unwrap();
+        assert_eq!(cfg.lines, crate::config::default_lines(false));
     }
 
     #[test]

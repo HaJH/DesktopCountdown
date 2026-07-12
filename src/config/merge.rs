@@ -1,6 +1,6 @@
 //! Merges global defaults with per-monitor overrides. No Win32, no I/O.
 
-use super::{Anchor, Config, Style};
+use super::{Anchor, Config, Line, Style};
 
 /// The resolved settings for one monitor.
 #[derive(Debug, Clone, PartialEq)]
@@ -9,6 +9,7 @@ pub struct Effective {
     pub anchor: Anchor,
     pub offset_px: [i32; 2],
     pub style: Style,
+    pub lines: Vec<Line>,
 }
 
 /// Only fields present in the matching `[[display]]` entry override the globals.
@@ -19,6 +20,7 @@ pub fn effective_for(cfg: &Config, monitor_id: &str) -> Effective {
         anchor: cfg.layout.anchor,
         offset_px: cfg.layout.offset_px,
         style: cfg.style.clone(),
+        lines: cfg.lines.clone(),
     };
 
     let Some(o) = cfg.displays.iter().find(|d| d.id == monitor_id) else {
@@ -68,8 +70,10 @@ pub fn effective_for(cfg: &Config, monitor_id: &str) -> Effective {
     if let Some(v) = o.tabular_figures {
         e.style.tabular_figures = v;
     }
-    if let Some(v) = o.show_summary_line {
-        e.style.show_summary_line = v;
+    // Wholesale replacement, not a per-line merge: the lists have no stable identity to
+    // merge along (a line is just a position in a list).
+    if let Some(v) = &o.lines {
+        e.lines = v.clone();
     }
 
     e
@@ -78,7 +82,7 @@ pub fn effective_for(cfg: &Config, monitor_id: &str) -> Effective {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Anchor, Config, DisplayOverride, DrawMode};
+    use crate::config::{Anchor, Config, DisplayOverride, DrawMode, Line};
 
     fn cfg_with(over: Vec<DisplayOverride>) -> Config {
         Config {
@@ -151,7 +155,6 @@ mod tests {
             letter_spacing_em: Some(0.5),
             shadow: Some(false),
             tabular_figures: Some(false),
-            show_summary_line: Some(false),
             ..DisplayOverride::default()
         }]);
         let s = effective_for(&cfg, "MON-A").style;
@@ -166,7 +169,27 @@ mod tests {
         assert_eq!(s.letter_spacing_em, 0.5);
         assert!(!s.shadow);
         assert!(!s.tabular_figures);
-        assert!(!s.show_summary_line);
+    }
+
+    #[test]
+    fn no_override_yields_the_global_line_list() {
+        let cfg = cfg_with(vec![]);
+        assert_eq!(effective_for(&cfg, "MON-A").lines, cfg.lines);
+    }
+
+    #[test]
+    fn a_line_override_replaces_the_whole_list() {
+        let mine = vec![Line {
+            text: "D-{daysTotal}".into(),
+            ..Line::default()
+        }];
+        let cfg = cfg_with(vec![DisplayOverride {
+            id: "MON-A".into(),
+            lines: Some(mine.clone()),
+            ..DisplayOverride::default()
+        }]);
+        assert_eq!(effective_for(&cfg, "MON-A").lines, mine);
+        assert_eq!(effective_for(&cfg, "MON-B").lines, cfg.lines);
     }
 
     #[test]
