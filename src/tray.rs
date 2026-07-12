@@ -6,6 +6,10 @@ use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
 pub const ICON_SIZE: u32 = 32;
 
+/// Resource id of `assets/icon.ico`, embedded into the exe by `build.rs`. Explorer shows the
+/// same resource as the exe's icon, so the tray and the executable never drift apart.
+const ICON_RESOURCE_ID: u16 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrayCommand {
     OpenConfig,
@@ -13,8 +17,20 @@ pub enum TrayCommand {
     Quit,
 }
 
-/// A filled disc, so we do not need to ship a binary .ico asset.
-fn icon_rgba(size: u32) -> Vec<u8> {
+/// The embedded icon, or a plain disc if the resource is missing — a build whose resource
+/// compiler was unavailable (see `build.rs`) still has to reach the tray, because the tray is
+/// the only way to quit a wallpaper-layer app.
+fn icon() -> Result<Icon> {
+    match Icon::from_resource(ICON_RESOURCE_ID, Some((ICON_SIZE, ICON_SIZE))) {
+        Ok(icon) => Ok(icon),
+        Err(e) => {
+            tracing::warn!("no embedded icon ({e}), falling back to a plain disc");
+            Ok(Icon::from_rgba(disc_rgba(ICON_SIZE), ICON_SIZE, ICON_SIZE)?)
+        }
+    }
+}
+
+fn disc_rgba(size: u32) -> Vec<u8> {
     let mut px = vec![0u8; (size * size * 4) as usize];
     let c = (size as f32 - 1.0) / 2.0;
     let r = c - 1.0;
@@ -53,7 +69,7 @@ impl Tray {
         let icon = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_tooltip("DesktopCountdown")
-            .with_icon(Icon::from_rgba(icon_rgba(ICON_SIZE), ICON_SIZE, ICON_SIZE)?)
+            .with_icon(icon()?)
             .build()?;
 
         Ok(Self {
@@ -99,15 +115,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn icon_pixels_have_the_expected_length() {
-        let px = icon_rgba(ICON_SIZE);
+    fn fallback_disc_pixels_have_the_expected_length() {
+        let px = disc_rgba(ICON_SIZE);
         assert_eq!(px.len(), (ICON_SIZE * ICON_SIZE * 4) as usize);
     }
 
     #[test]
-    fn icon_centre_is_opaque_and_corners_are_transparent() {
+    fn fallback_disc_centre_is_opaque_and_corners_are_transparent() {
         let s = ICON_SIZE;
-        let px = icon_rgba(s);
+        let px = disc_rgba(s);
         let at = |x: u32, y: u32| px[((y * s + x) * 4 + 3) as usize];
         assert_eq!(at(0, 0), 0, "corner should be transparent");
         assert_eq!(at(s - 1, s - 1), 0, "corner should be transparent");

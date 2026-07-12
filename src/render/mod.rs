@@ -130,8 +130,8 @@ impl Painter {
         let gap = style.size_px * LINE_GAP_RATIO;
 
         let content_w = laid.iter().map(|l| l.width).fold(0.0f32, f32::max);
-        let content_h = laid.iter().map(|l| l.ink_h).sum::<f32>()
-            + gap * laid.len().saturating_sub(1) as f32;
+        let content_h =
+            laid.iter().map(|l| l.ink_h).sum::<f32>() + gap * laid.len().saturating_sub(1) as f32;
 
         Ok(Composed {
             lines: laid,

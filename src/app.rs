@@ -307,9 +307,10 @@ impl App {
         if let Err(e) = self.draw(&resolved) {
             tracing::warn!("draw failed, recreating the compositor: {e:#}");
             self.compositor = Compositor::new(self.painter.d2d_factory())?;
-            self.rebuild_panels()?; // targets are bound to HWNDs; rebuild them too
-            // The rebuild may have changed how many panels there are, so the lines must be
-            // resolved against the new set -- `draw` walks the two in lockstep.
+            // Render targets are bound to HWNDs, so the panels have to be rebuilt too -- and
+            // that can change how many there are, so the lines must be resolved against the
+            // new set. `draw` walks panels and lines in lockstep.
+            self.rebuild_panels()?;
             let resolved = self.resolve(&b);
             self.draw(&resolved)?; // one retry; a second failure propagates
             self.last_lines = Some(resolved);
