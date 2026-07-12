@@ -1,0 +1,11 @@
+# Statically link the MSVC C runtime so the release binary is a single self-contained exe.
+#
+# Without this, the exe imports vcruntime140.dll and will not start on a Windows install that
+# has no Visual C++ redistributable -- an unacceptable failure mode for a binary handed out on
+# a GitHub release, where "download one file and run it" is the whole deal. The UCRT
+# (api-ms-win-crt-*) ships with Windows 10+, so the CRT is the only piece that needed pinning.
+#
+# Costs ~1 MB of binary size and nothing else: the renderer and the settings window (egui/wgpu)
+# both run unchanged against a static CRT.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

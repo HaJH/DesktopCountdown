@@ -26,14 +26,20 @@ animated-wallpaper apps like Wallpaper Engine.
 
 ## Install
 
-Requires [Rust](https://rustup.rs) (1.92+) and Windows 10/11.
+Grab `desktop-countdown.exe` from the [latest
+release](https://github.com/HaJH/DesktopCountdown/releases) and run it. It is a single
+self-contained binary — the C runtime is linked statically and everything else it uses
+(Direct2D, DirectWrite, DirectComposition) ships with Windows. There is nothing to install and
+no console window; look for the tray icon.
+
+To build it yourself you need [Rust](https://rustup.rs) (1.92+) and Windows 10/11:
 
 ```
 cargo build --release
 ```
 
-Run `target\release\desktop-countdown.exe`. There is no console window — look for the tray
-icon. (`build.bat` does the same and can be double-clicked.)
+The result is at `target\release\desktop-countdown.exe`. (`build.bat` does the same and can be
+double-clicked.)
 
 | Command | What it does |
 |---|---|
