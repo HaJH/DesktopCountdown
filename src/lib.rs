@@ -15,6 +15,7 @@ pub mod paths;
 pub mod render;
 pub mod settings;
 pub mod single_instance;
+pub mod tokens;
 pub mod tray;
 pub mod watch;
 pub mod workerw;
