@@ -735,6 +735,33 @@ size_px = 48.0
         assert_eq!(cfg, back);
     }
 
+    /// The settings window writes this shape whenever a monitor overrides its lines. TOML
+    /// rejects a scalar written after a table, so `DisplayOverride::lines` -- an array of
+    /// tables -- has to be the struct's last field or `to_string_pretty` produces a file that
+    /// will not parse back.
+    #[test]
+    fn a_config_with_a_per_monitor_line_list_round_trips_through_toml() {
+        let mut cfg = Config::default();
+        cfg.displays.push(DisplayOverride {
+            id: "MON-A".into(),
+            name: Some("DISPLAY1".into()),
+            enabled: Some(true),
+            size_px: Some(48.0),
+            color: Some("#112233".into()),
+            lines: Some(vec![Line {
+                text: "D-{daysTotal}".into(),
+                size_ratio: 0.5,
+                align: Align::Right,
+                color: Some("#AABBCC".into()),
+            }]),
+            ..DisplayOverride::default()
+        });
+
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(cfg, back, "round trip lost data. serialized:\n{text}");
+    }
+
     #[test]
     fn validate_rejects_infinite_size() {
         let cfg: Config = toml::from_str(

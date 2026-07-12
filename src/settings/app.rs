@@ -7,9 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use eframe::egui;
 
-use crate::config::{self, Anchor, Config, DrawMode, Style};
+use crate::config::{self, Align, Anchor, Config, DrawMode, Line, Style};
 use crate::monitors;
-use crate::settings::{overrides, widgets};
+use crate::settings::{lines, overrides, widgets};
 
 /// Minimum gap between two writes of `config.toml`.
 ///
@@ -457,6 +457,17 @@ impl SettingsApp {
         }
         ui.separator();
 
+        ui.heading("Lines");
+        // Lent out and put back: `lines_editor` needs `&mut Vec<Line>` while `self` is still
+        // borrowed by `ui`'s closure-free call chain here.
+        let mut list = std::mem::take(&mut self.cfg.lines);
+        let lines_changed = lines_editor(ui, &mut list, "global");
+        self.cfg.lines = list;
+        if lines_changed {
+            self.mark_dirty();
+        }
+        ui.separator();
+
         ui.heading("Layout");
         if anchor_grid(ui, "dc_anchor_global", &mut self.cfg.layout.anchor) {
             self.mark_dirty();
@@ -623,6 +634,19 @@ impl SettingsApp {
             o.tabular_figures = Some(style.tabular_figures);
             self.mark_dirty();
         }
+        ui.separator();
+
+        ui.heading("Lines");
+        // `enable_style_override` seeds this with a copy of the global list, so the fallback
+        // only matters for a hand-edited config.toml that set some style fields but no lines.
+        let mut list = self.cfg.displays[o_idx]
+            .lines
+            .clone()
+            .unwrap_or_else(|| self.cfg.lines.clone());
+        if lines_editor(ui, &mut list, "monitor") {
+            self.cfg.displays[o_idx].lines = Some(list);
+            self.mark_dirty();
+        }
     }
 }
 
@@ -784,6 +808,162 @@ fn style_fields(
     changed |= ui
         .checkbox(&mut style.tabular_figures, "Tabular figures")
         .changed();
+
+    changed
+}
+
+fn align_label(align: Align) -> &'static str {
+    match align {
+        Align::Left => "Left",
+        Align::Center => "Center",
+        Align::Right => "Right",
+    }
+}
+
+/// What a row's buttons asked for. Applied after the row loop: reordering or removing
+/// mid-iteration would invalidate the indices the rest of the loop is walking.
+enum LineAction {
+    Up,
+    Down,
+    Remove,
+}
+
+/// The line-list editor: a preset picker, the token reference, and one row per line. Shared by
+/// the global list and a monitor override's list (`salt` keeps their widget ids apart).
+/// Returns whether anything changed this frame.
+fn lines_editor(ui: &mut egui::Ui, list: &mut Vec<Line>, salt: &str) -> bool {
+    let mut changed = false;
+
+    // Applying a preset replaces the whole list, and this window saves on change with no undo,
+    // so picking one in the combo must not be enough -- the user has to press Apply. The
+    // pending choice lives in egui's temp store, not in `SettingsApp`: it is UI scratch state,
+    // not config.
+    let preset_id = egui::Id::new(("dc_preset", salt));
+    let mut chosen: usize = ui.ctx().data(|d| d.get_temp(preset_id)).unwrap_or(0);
+    ui.horizontal(|ui| {
+        ui.label("Preset:");
+        egui::ComboBox::from_id_salt(("dc_preset_combo", salt))
+            .selected_text(lines::PRESETS[chosen].name)
+            .show_ui(ui, |ui| {
+                for (i, p) in lines::PRESETS.iter().enumerate() {
+                    ui.selectable_value(&mut chosen, i, p.name);
+                }
+            });
+        if ui
+            .button("Apply")
+            .on_hover_text("Replaces every line below")
+            .clicked()
+        {
+            *list = lines::PRESETS[chosen].build();
+            changed = true;
+        }
+    });
+    ui.ctx().data_mut(|d| d.insert_temp(preset_id, chosen));
+
+    egui::CollapsingHeader::new("Available tokens")
+        .id_salt(("dc_tokens", salt))
+        .show(ui, |ui| {
+            egui::Grid::new(("dc_token_grid", salt))
+                .num_columns(2)
+                .spacing([12.0, 2.0])
+                .show(ui, |ui| {
+                    for (token, description) in crate::tokens::TOKENS {
+                        ui.monospace(token);
+                        ui.small(description);
+                        ui.end_row();
+                    }
+                });
+        });
+    ui.add_space(4.0);
+
+    let last = list.len().saturating_sub(1);
+    let mut action: Option<(usize, LineAction)> = None;
+    for (i, line) in list.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            changed |= ui
+                .add(
+                    egui::TextEdit::singleline(&mut line.text)
+                        .desired_width(170.0)
+                        .hint_text("Text or {token}"),
+                )
+                .changed();
+            changed |= ui
+                .add(
+                    egui::DragValue::new(&mut line.size_ratio)
+                        .speed(0.01)
+                        .range(0.05..=4.0)
+                        .fixed_decimals(2),
+                )
+                .on_hover_text("Size, relative to the base size above")
+                .changed();
+            egui::ComboBox::from_id_salt(("dc_align", salt, i))
+                .width(72.0)
+                .selected_text(align_label(line.align))
+                .show_ui(ui, |ui| {
+                    for a in [Align::Left, Align::Center, Align::Right] {
+                        changed |= ui
+                            .selectable_value(&mut line.align, a, align_label(a))
+                            .changed();
+                    }
+                });
+
+            // The colour button needs a concrete colour even when the line is inheriting one,
+            // so the checkbox -- not the button -- is what says "own colour" vs. "inherit".
+            // Switching inheritance off starts from white rather than from the inherited
+            // colour: the editor is not given the `Style` (a monitor override synthesizes its
+            // own), and the seed is one click away from any other colour anyway.
+            let mut own = line.color.is_some();
+            if ui
+                .checkbox(&mut own, "")
+                .on_hover_text("Use a colour of its own instead of the global one")
+                .changed()
+            {
+                line.color = own.then(|| "#FFFFFF".to_string());
+                changed = true;
+            }
+            if let Some(hex) = &mut line.color {
+                let mut rgb = widgets::hex_to_rgb(hex);
+                if ui.color_edit_button_srgb(&mut rgb).changed() {
+                    *hex = widgets::rgb_to_hex(rgb);
+                    changed = true;
+                }
+            }
+
+            if ui
+                .add_enabled(i > 0, egui::Button::new("\u{2191}"))
+                .clicked()
+            {
+                action = Some((i, LineAction::Up));
+            }
+            if ui
+                .add_enabled(i < last, egui::Button::new("\u{2193}"))
+                .clicked()
+            {
+                action = Some((i, LineAction::Down));
+            }
+            if ui
+                .add_enabled(last > 0, egui::Button::new("\u{2715}"))
+                .on_hover_text("Remove this line (the last one cannot be removed)")
+                .clicked()
+            {
+                action = Some((i, LineAction::Remove));
+            }
+        });
+    }
+
+    if let Some((i, what)) = action {
+        match what {
+            LineAction::Up => lines::move_up(list, i),
+            LineAction::Down => lines::move_down(list, i),
+            LineAction::Remove => lines::remove(list, i),
+        }
+        changed = true;
+    }
+
+    if ui.button("+ Add line").clicked() {
+        lines::add(list);
+        changed = true;
+    }
 
     changed
 }
