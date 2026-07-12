@@ -2,6 +2,7 @@
 //! It edits config.toml; the renderer watches the file and applies changes.
 
 pub mod app;
+pub mod lines;
 pub mod overrides;
 pub mod widgets;
 
