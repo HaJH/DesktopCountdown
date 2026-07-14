@@ -17,6 +17,8 @@ animated-wallpaper apps like Wallpaper Engine.
   {days}d` — 13 tokens covering every part of the remaining time.
 - **Presets.** A preset is a named snapshot of the whole look. Pick one, tweak it, save your own.
 - **Live editing.** Drag a slider and the wallpaper follows it in real time.
+- **Daily countdown.** A second, recurring target: a clock time (say 18:00) that every day
+  counts down to, counts up past (`+00:12:34`), and resets at midnight.
 - **Multi-monitor.** Every monitor gets the countdown, and any monitor can override the style,
   the position, the line list, or opt out entirely.
 - **Font picker that shows the fonts.** Each family name is drawn in its own font, so Korean,
@@ -102,7 +104,8 @@ and per-monitor overrides.
 
 - The countdown is part of the wallpaper, so you cannot click it. Everything is driven from the
   tray / menu bar icon and the settings window.
-- At the target time the countdown stops at `00:00:00`. It does not count up and does not notify.
+- At the target time the countdown stops at `00:00:00`. It does not count up (the daily
+  tokens are the exception — they do) and does not notify.
 - **Windows:** attaching to the wallpaper layer relies on undocumented behaviour. It re-attaches
   by itself when Explorer restarts, but a future Windows update could change the window structure
   and break it.

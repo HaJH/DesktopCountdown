@@ -18,6 +18,7 @@ multiplies the base `[style].size_px`, and a line without a `color` inherits `[s
 
 ```toml
 target = "2026-12-31T23:59:59"
+daily_target = "18:00:00"   # a clock time the daily tokens count to, every day
 
 [style]
 font_family = "Consolas"
@@ -47,6 +48,14 @@ Available tokens:
 | `{daysTotal}` `{hoursTotal}` `{minutesTotal}` `{secondsTotal}` | Total time remaining, in that unit |
 | `{hours}` `{minutes}` `{seconds}` | Hours within the day (0–23), minutes, seconds |
 | `{hh}` `{mm}` `{ss}` | Zero-padded to two digits (`{hh}` is the *total* hours, so it grows past two) |
+| `{dailyHh}` `{dailyMm}` `{dailySs}` | To the daily target, zero-padded: hours, minutes, seconds. Past it they count up until midnight resets the cycle |
+| `{dailyHours}` `{dailyMinutes}` `{dailySeconds}` | The same, without the padding |
+| `{dailyMinutesTotal}` | Total minutes to (or past) the daily target |
+| `{dailySign}` | Empty while counting down, `+` once the daily target has passed |
+
+The `daily*` tokens count to `daily_target` — a clock time, not a date. Every day counts
+down to it anew, counts up past it (put `{dailySign}` in front to show the `+`), and resets
+at midnight. `target` and `daily_target` are independent; one line can use either, or both.
 
 An unknown token is printed as-is, so a typo shows on the wallpaper instead of vanishing
 silently.
@@ -87,8 +96,8 @@ A `[[line]]`'s own keys:
 A preset is a **named snapshot of the whole look** — the line list *and* the style. Picking one
 replaces both.
 
-Five ship with the app: Clock only, Summary + Clock, D-Day, Days left, Caption + Clock. A fresh
-config starts on Clock only: `{hh}:{mm}:{ss}` on its own.
+Six ship with the app: Clock only, Summary + Clock, D-Day, Days left, Caption + Clock,
+Daily countdown. A fresh config starts on Clock only: `{hh}:{mm}:{ss}` on its own.
 
 Picking a preset applies it straight away. Editing on top of it does not touch the preset — the
 picker just marks the look as changed (`Clock only *`), and `Reset` puts it back. `Save as…`
