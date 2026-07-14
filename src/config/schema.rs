@@ -47,7 +47,7 @@ fn d_font_weight() -> u16 {
     400
 }
 fn d_size_px() -> f32 {
-    64.0
+    128.0
 }
 fn d_mode() -> DrawMode {
     DrawMode::Fill
@@ -467,7 +467,7 @@ mod tests {
     fn minimal_config_fills_defaults() {
         let cfg: Config = toml::from_str(MINIMAL).unwrap();
         assert_eq!(cfg.style.font_family, DEFAULT_FONT_FAMILY);
-        assert_eq!(cfg.style.size_px, 64.0);
+        assert_eq!(cfg.style.size_px, 128.0);
         assert_eq!(cfg.style.mode, DrawMode::Fill);
         assert_eq!(cfg.style.opacity, 0.85);
         assert!(cfg.style.shadow);

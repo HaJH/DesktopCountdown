@@ -22,7 +22,7 @@ daily_target = "18:00:00"   # a clock time the daily tokens count to, every day
 
 [style]
 font_family = "Consolas"
-size_px = 64.0            # the base size that every size_ratio multiplies
+size_px = 128.0           # the base size that every size_ratio multiplies
 color = "#FFFFFF"
 
 [[line]]
@@ -70,7 +70,7 @@ is what keeps a three-line countdown looking like one thing rather than three.
 |---|---|---|
 | `font_family` | `Consolas` on Windows, `Menlo` on macOS | any installed family; an unknown one falls back |
 | `font_weight` | `400` | `100`–`900` |
-| `size_px` | `64.0` | above `0` — the base that every `size_ratio` multiplies |
+| `size_px` | `128.0` | above `0` — the base that every `size_ratio` multiplies |
 | `mode` | `fill` | `fill` \| `outline` \| `both` |
 | `color` | `#FFFFFF` | `#RRGGBB` |
 | `outline_color` | `#000000` | `#RRGGBB` |
@@ -130,7 +130,7 @@ name = "Nextfest"
 
 [preset.style]
 font_family = "Consolas"
-size_px = 64.0
+size_px = 128.0
 color = "#FFFFFF"
 
 [[preset.line]]

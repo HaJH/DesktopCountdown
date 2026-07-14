@@ -98,7 +98,7 @@ mod tests {
         assert!(e.enabled);
         assert_eq!(e.anchor, Anchor::Center);
         assert_eq!(e.offset_px, [0, 0]);
-        assert_eq!(e.style.size_px, 64.0);
+        assert_eq!(e.style.size_px, 128.0);
         assert_eq!(e.style.font_family, crate::config::DEFAULT_FONT_FAMILY);
     }
 
@@ -109,7 +109,7 @@ mod tests {
             size_px: Some(120.0),
             ..DisplayOverride::default()
         }]);
-        assert_eq!(effective_for(&cfg, "MON-A").style.size_px, 64.0);
+        assert_eq!(effective_for(&cfg, "MON-A").style.size_px, 128.0);
     }
 
     #[test]
