@@ -84,7 +84,11 @@ pub fn daily_breakdown(now: &Zoned, target: jiff::civil::Time) -> DailyBreakdown
         .to_zoned(now.time_zone().clone())
         .expect("today's date at a valid clock time is within jiff's range");
     let secs = today_target.timestamp().as_second() - now.timestamp().as_second();
-    let (overtime, secs) = if secs > 0 { (false, secs) } else { (true, -secs) };
+    let (overtime, secs) = if secs > 0 {
+        (false, secs)
+    } else {
+        (true, -secs)
+    };
     DailyBreakdown {
         hours: secs / 3600,
         minutes: (secs / 60) % 60,

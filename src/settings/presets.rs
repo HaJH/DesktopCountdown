@@ -28,7 +28,7 @@ pub const BUILTIN_COUNT: usize = 6;
 /// The presets that ship with the app. `Clock only` is first: it is what a fresh config holds
 /// (`config::DEFAULT_PRESET`), and the picker shows the list in this order.
 ///
-/// All five carry `Style::default()`. That makes picking one a way back to the stock look as
+/// All six carry `Style::default()`. That makes picking one a way back to the stock look as
 /// well as to a layout -- a recovery point, not a stray side effect.
 pub fn builtin() -> Vec<Preset> {
     fn preset(name: &str, lines: &[(&str, f32)]) -> Preset {
