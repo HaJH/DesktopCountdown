@@ -83,6 +83,32 @@ pub fn should_save(dirty: bool, ms_since_last_write: u64, min_interval_ms: u64) 
     dirty && ms_since_last_write >= min_interval_ms
 }
 
+/// Splits a monitor's name into the display's own name and its size, for the tab strip.
+///
+/// Both backends build the name the same way -- `format!("{device} ({w}x{h})")` -- where
+/// `device` is `\\.\DISPLAY1` on Windows and the screen's localized name on macOS. The tabs
+/// want the halves apart so each can be set in its own size, and Windows' `\\.\` prefix is
+/// noise in a label.
+///
+/// A name that does not have that shape comes back whole, with no size. A tab label is not
+/// worth being clever about, and `MonitorInfo::name` is documented as display-only -- nothing
+/// downstream depends on this being right, only on it being readable.
+pub fn split_monitor_name(name: &str) -> (&str, &str) {
+    let Some(open) = name.rfind(" (") else {
+        return (strip_device_prefix(name), "");
+    };
+    let (device, rest) = name.split_at(open);
+    let size = rest
+        .strip_prefix(" (")
+        .and_then(|s| s.strip_suffix(')'))
+        .unwrap_or("");
+    (strip_device_prefix(device), size)
+}
+
+fn strip_device_prefix(device: &str) -> &str {
+    device.strip_prefix(r"\\.\").unwrap_or(device)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -212,5 +238,42 @@ mod tests {
             second: 0,
         };
         assert_eq!(datetime_from_fields(&f), None); // 2026 is not a leap year
+    }
+
+    #[test]
+    fn a_windows_monitor_name_splits_and_loses_its_device_prefix() {
+        assert_eq!(
+            split_monitor_name(r"\\.\DISPLAY1 (2560x1440)"),
+            ("DISPLAY1", "2560x1440")
+        );
+    }
+
+    /// macOS names are the screen's localized name, which has spaces and brackets of its own
+    /// nowhere near the end -- so the size has to be found from the right, not the left.
+    #[test]
+    fn a_macos_monitor_name_splits_at_the_last_bracket() {
+        assert_eq!(
+            split_monitor_name("Built-in Retina Display (3024x1964)"),
+            ("Built-in Retina Display", "3024x1964")
+        );
+        assert_eq!(
+            split_monitor_name("LG UltraFine (2) (3840x2160)"),
+            ("LG UltraFine (2)", "3840x2160")
+        );
+    }
+
+    #[test]
+    fn a_name_without_a_size_comes_back_whole() {
+        assert_eq!(split_monitor_name("DISPLAY1"), ("DISPLAY1", ""));
+        assert_eq!(split_monitor_name(r"\\.\DISPLAY1"), ("DISPLAY1", ""));
+        assert_eq!(split_monitor_name(""), ("", ""));
+    }
+
+    /// A trailing bracket that is not a size still splits -- the label stays readable either
+    /// way, which is all this is for.
+    #[test]
+    fn an_unexpected_shape_does_not_panic() {
+        assert_eq!(split_monitor_name("Odd (name"), ("Odd", ""));
+        assert_eq!(split_monitor_name("Odd ()"), ("Odd", ""));
     }
 }
