@@ -12,7 +12,7 @@ use anyhow::Result;
 use jiff::Zoned;
 
 use crate::config::{effective_for, Config, Line};
-use crate::countdown::{breakdown, Breakdown};
+use crate::countdown::{breakdown, daily_breakdown, Breakdown, DailyBreakdown};
 use crate::layout::place;
 use crate::platform::{
     self, autostart, Attach, ConfigWatcher, Frame, MonitorInfo, Painter, Panels, Tray, TrayCommand,
@@ -310,7 +310,8 @@ impl AppCore {
     fn render(&mut self) -> Result<()> {
         let now = Zoned::now();
         let b = breakdown(&now, &self.target);
-        let resolved = self.resolve(&b);
+        let d = daily_breakdown(&now, self.cfg.daily_target);
+        let resolved = self.resolve(&b, &d);
 
         if self.last_lines.as_ref() == Some(&resolved) {
             return Ok(());
@@ -325,7 +326,7 @@ impl AppCore {
             // so the lines must be resolved against the new set. `draw` walks panels and
             // frames in lockstep.
             self.rebuild_panels()?;
-            let resolved = self.resolve(&b);
+            let resolved = self.resolve(&b, &d);
             self.draw(&resolved)?; // one retry; a second failure propagates
             self.last_lines = Some(resolved);
             return Ok(());
@@ -336,7 +337,7 @@ impl AppCore {
 
     /// One line list per panel, with the templates substituted. Per panel and not once for
     /// all of them because a monitor override can carry its own list.
-    fn resolve(&self, b: &Breakdown) -> Vec<Vec<Line>> {
+    fn resolve(&self, b: &Breakdown, d: &DailyBreakdown) -> Vec<Vec<Line>> {
         self.panels
             .monitors()
             .iter()
@@ -345,7 +346,7 @@ impl AppCore {
                     .lines
                     .into_iter()
                     .map(|l| Line {
-                        text: tokens::render(&l.text, b),
+                        text: tokens::render(&l.text, b, d),
                         ..l
                     })
                     .collect()

@@ -108,14 +108,22 @@ mod tests {
             .unwrap()
     }
 
+    /// Daily tokens are not under test here; any value satisfies `render`.
+    const DAILY_ZERO: DailyBreakdown = DailyBreakdown {
+        hours: 0,
+        minutes: 0,
+        seconds: 0,
+        overtime: false,
+    };
+
     /// The two templates the default config ships with (`config::MAIN_TEMPLATE` /
     /// `SUMMARY_TEMPLATE`). The formats live in `crate::tokens` now; these keep the
     /// arithmetic below readable.
     fn format_main(b: &Breakdown) -> String {
-        crate::tokens::render("{hh}:{mm}:{ss}", b)
+        crate::tokens::render("{hh}:{mm}:{ss}", b, &DAILY_ZERO)
     }
     fn format_summary(b: &Breakdown) -> String {
-        crate::tokens::render("{months}m {weeks}w {days}d", b)
+        crate::tokens::render("{months}m {weeks}w {days}d", b, &DAILY_ZERO)
     }
 
     #[test]

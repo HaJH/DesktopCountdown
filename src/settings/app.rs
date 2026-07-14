@@ -630,6 +630,7 @@ impl SettingsApp {
 
         let eff = self.effective();
         let b = self.preview_breakdown();
+        let d = self.preview_daily();
 
         egui::Frame::NONE
             .fill(egui::Color32::from_rgb(24, 24, 24))
@@ -637,7 +638,7 @@ impl SettingsApp {
             .show(ui, |ui| {
                 ui.set_min_width(180.0);
                 for l in &eff.lines {
-                    let text = crate::tokens::render(&l.text, &b);
+                    let text = crate::tokens::render(&l.text, &b, &d);
                     if text.is_empty() {
                         continue;
                     }
@@ -699,6 +700,12 @@ impl SettingsApp {
             Ok(target) => crate::countdown::breakdown(&now, &target),
             Err(_) => crate::countdown::breakdown(&now, &now),
         }
+    }
+
+    /// The daily companion to `preview_breakdown`. Infallible: a clock time
+    /// on today's date always resolves.
+    fn preview_daily(&self) -> crate::countdown::DailyBreakdown {
+        crate::countdown::daily_breakdown(&jiff::Zoned::now(), self.cfg.daily_target)
     }
 
     fn ui_date_fields(&mut self, ui: &mut egui::Ui) {

@@ -1,12 +1,12 @@
 //! Token substitution for line templates. No Win32, no I/O.
 
-use crate::countdown::Breakdown;
+use crate::countdown::{Breakdown, DailyBreakdown};
 
-/// Replaces every `{token}` in `template` with its value from `b`.
+/// Replaces every `{token}` in `template` with its value from `b`/`d`.
 ///
 /// An unknown token, or a `{` with no `}`, is copied through unchanged: a typo shows up on
 /// the wallpaper instead of silently vanishing.
-pub fn render(template: &str, b: &Breakdown) -> String {
+pub fn render(template: &str, b: &Breakdown, d: &DailyBreakdown) -> String {
     let mut out = String::with_capacity(template.len() + 16);
     let mut rest = template;
     while let Some(open) = rest.find('{') {
@@ -17,7 +17,7 @@ pub fn render(template: &str, b: &Breakdown) -> String {
             return out;
         };
         let name = &after[..close];
-        match value(name, b) {
+        match value(name, b, d) {
             Some(v) => out.push_str(&v),
             None => {
                 out.push('{');
@@ -31,7 +31,7 @@ pub fn render(template: &str, b: &Breakdown) -> String {
     out
 }
 
-fn value(name: &str, b: &Breakdown) -> Option<String> {
+fn value(name: &str, b: &Breakdown, d: &DailyBreakdown) -> Option<String> {
     let total_minutes = b.total_hours * 60 + b.minutes;
     let total_seconds = total_minutes * 60 + b.seconds;
     Some(match name {
@@ -48,12 +48,26 @@ fn value(name: &str, b: &Breakdown) -> Option<String> {
         "hh" => format!("{:02}", b.total_hours),
         "mm" => format!("{:02}", b.minutes),
         "ss" => format!("{:02}", b.seconds),
+        "dailyHours" => d.hours.to_string(),
+        "dailyMinutes" => d.minutes.to_string(),
+        "dailySeconds" => d.seconds.to_string(),
+        "dailyMinutesTotal" => (d.hours * 60 + d.minutes).to_string(),
+        "dailyHh" => format!("{:02}", d.hours),
+        "dailyMm" => format!("{:02}", d.minutes),
+        "dailySs" => format!("{:02}", d.seconds),
+        "dailySign" => {
+            if d.overtime {
+                "+".to_string()
+            } else {
+                String::new()
+            }
+        }
         _ => return None,
     })
 }
 
 /// Every token, with the description the settings window shows next to it.
-pub const TOKENS: [(&str, &str); 13] = [
+pub const TOKENS: [(&str, &str); 21] = [
     ("{months}", "whole calendar months left"),
     ("{weeks}", "whole weeks after the months"),
     ("{days}", "whole days after the weeks"),
@@ -67,6 +81,26 @@ pub const TOKENS: [(&str, &str); 13] = [
     ("{hh}", "total hours, zero-padded to two digits"),
     ("{mm}", "minutes, zero-padded to two digits"),
     ("{ss}", "seconds, zero-padded to two digits"),
+    (
+        "{dailyHh}",
+        "hours to the daily target, zero-padded (elapsed once past it)",
+    ),
+    ("{dailyMm}", "minutes to the daily target, zero-padded"),
+    ("{dailySs}", "seconds to the daily target, zero-padded"),
+    (
+        "{dailyHours}",
+        "hours to the daily target (elapsed once past it)",
+    ),
+    ("{dailyMinutes}", "minutes to the daily target (0-59)"),
+    ("{dailySeconds}", "seconds to the daily target (0-59)"),
+    (
+        "{dailyMinutesTotal}",
+        "total minutes to (or past) the daily target",
+    ),
+    (
+        "{dailySign}",
+        "\"+\" once the daily target has passed, else empty",
+    ),
 ];
 
 #[cfg(test)]
@@ -89,54 +123,74 @@ mod tests {
         crate::countdown::breakdown(&z(2026, 7, 12, 9, 0, 0), &z(2026, 10, 24, 9, 0, 0))
     }
 
+    /// Hand-built: the token layer is tested against the struct, not against
+    /// `daily_breakdown`'s arithmetic (countdown.rs covers that).
+    fn daily(overtime: bool) -> DailyBreakdown {
+        DailyBreakdown {
+            hours: 2,
+            minutes: 15,
+            seconds: 30,
+            overtime,
+        }
+    }
+
     #[test]
     fn main_template_matches_the_old_clock_format() {
-        assert_eq!(render("{hh}:{mm}:{ss}", &b()), "2496:00:00");
+        assert_eq!(render("{hh}:{mm}:{ss}", &b(), &daily(false)), "2496:00:00");
     }
 
     #[test]
     fn summary_template_matches_the_old_summary_format() {
-        assert_eq!(render("{months}m {weeks}w {days}d", &b()), "3m 1w 5d");
+        assert_eq!(
+            render("{months}m {weeks}w {days}d", &b(), &daily(false)),
+            "3m 1w 5d"
+        );
     }
 
     #[test]
     fn zero_padding_applies_to_minutes_and_seconds() {
         let b = crate::countdown::breakdown(&z(2026, 10, 24, 8, 59, 53), &z(2026, 10, 24, 9, 0, 0));
-        assert_eq!(render("{hh}:{mm}:{ss}", &b), "00:00:07");
-        assert_eq!(render("{minutes}:{seconds}", &b), "0:7");
+        assert_eq!(render("{hh}:{mm}:{ss}", &b, &daily(false)), "00:00:07");
+        assert_eq!(render("{minutes}:{seconds}", &b, &daily(false)), "0:7");
     }
 
     #[test]
     fn totals_are_derived_from_the_breakdown() {
         let b = b();
-        assert_eq!(render("{daysTotal}", &b), "104");
-        assert_eq!(render("{hoursTotal}", &b), "2496");
-        assert_eq!(render("{minutesTotal}", &b), "149760");
-        assert_eq!(render("{secondsTotal}", &b), "8985600");
-        assert_eq!(render("{hours}", &b), "0");
+        assert_eq!(render("{daysTotal}", &b, &daily(false)), "104");
+        assert_eq!(render("{hoursTotal}", &b, &daily(false)), "2496");
+        assert_eq!(render("{minutesTotal}", &b, &daily(false)), "149760");
+        assert_eq!(render("{secondsTotal}", &b, &daily(false)), "8985600");
+        assert_eq!(render("{hours}", &b, &daily(false)), "0");
     }
 
     #[test]
     fn unknown_tokens_are_left_alone_so_typos_are_visible() {
-        assert_eq!(render("{dayz} left", &b()), "{dayz} left");
+        assert_eq!(render("{dayz} left", &b(), &daily(false)), "{dayz} left");
     }
 
     #[test]
     fn unmatched_braces_are_left_alone() {
-        assert_eq!(render("100% {done", &b()), "100% {done");
-        assert_eq!(render("a } b", &b()), "a } b");
+        assert_eq!(render("100% {done", &b(), &daily(false)), "100% {done");
+        assert_eq!(render("a } b", &b(), &daily(false)), "a } b");
     }
 
     #[test]
     fn plain_text_passes_through_including_non_ascii() {
-        assert_eq!(render("수능까지 {daysTotal}일", &b()), "수능까지 104일");
+        assert_eq!(
+            render("수능까지 {daysTotal}일", &b(), &daily(false)),
+            "수능까지 104일"
+        );
     }
 
     #[test]
     fn expired_renders_zeroes() {
         let t = z(2026, 10, 24, 9, 0, 0);
         let b = crate::countdown::breakdown(&t, &t);
-        assert_eq!(render("{hh}:{mm}:{ss} / {daysTotal}", &b), "00:00:00 / 0");
+        assert_eq!(
+            render("{hh}:{mm}:{ss} / {daysTotal}", &b, &daily(false)),
+            "00:00:00 / 0"
+        );
     }
 
     #[test]
@@ -144,10 +198,44 @@ mod tests {
         let b = b();
         for (token, _) in TOKENS {
             assert_ne!(
-                render(token, &b),
+                render(token, &b, &daily(false)),
                 token,
                 "{token} is advertised but does not resolve"
             );
         }
+    }
+
+    #[test]
+    fn daily_tokens_render_padded_and_unpadded() {
+        let d = daily(false);
+        assert_eq!(
+            render("{dailyHh}:{dailyMm}:{dailySs}", &b(), &d),
+            "02:15:30"
+        );
+        assert_eq!(
+            render("{dailyHours}:{dailyMinutes}:{dailySeconds}", &b(), &d),
+            "2:15:30"
+        );
+        assert_eq!(render("{dailyMinutesTotal}", &b(), &d), "135");
+    }
+
+    #[test]
+    fn daily_sign_is_empty_while_counting_down_and_plus_in_overtime() {
+        assert_eq!(
+            render(
+                "{dailySign}{dailyHh}:{dailyMm}:{dailySs}",
+                &b(),
+                &daily(false)
+            ),
+            "02:15:30"
+        );
+        assert_eq!(
+            render(
+                "{dailySign}{dailyHh}:{dailyMm}:{dailySs}",
+                &b(),
+                &daily(true)
+            ),
+            "+02:15:30"
+        );
     }
 }
