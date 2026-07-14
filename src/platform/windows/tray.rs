@@ -101,7 +101,7 @@ impl Tray {
     pub fn set_warning(&self, on: bool) -> Result<()> {
         tracing::debug!(on, "tray: set_warning");
         let tip = if on {
-            "DesktopCountdown — 설정 오류 (log.txt 확인)"
+            "DesktopCountdown — config error (see log.txt)"
         } else {
             "DesktopCountdown"
         };
