@@ -19,38 +19,51 @@ struct File {
     presets: Vec<Preset>,
 }
 
+/// What `load` found: the presets that parsed and validated, and the ones it had to reject.
+/// `dropped` is not thrown away here -- the settings window must not delete data it did not
+/// understand, so the caller (`Library::add_dropped`) carries it forward into any later
+/// rewrite of this file instead of letting it vanish. See `Library::dropped`.
+#[derive(Debug, Default, PartialEq)]
+pub struct Loaded {
+    pub presets: Vec<Preset>,
+    pub dropped: Vec<Preset>,
+}
+
 /// Reads the user's presets. A file that is missing, unreadable, or malformed is not an error:
 /// the settings window opens with the built-ins alone rather than refusing to start over a
-/// broken preset library. The same goes for a single preset that would not validate -- it is
-/// dropped and the rest load.
-pub fn load(path: &Path) -> Vec<Preset> {
+/// broken preset library -- there is nothing to preserve when the file could not be understood
+/// at all. A single preset that would not validate (e.g. a hand-edited `opacity = 3.0`) is
+/// different: it does not load, but it is returned in `dropped` rather than discarded, since it
+/// parsed fine and only its values are the problem.
+pub fn load(path: &Path) -> Loaded {
     if !path.exists() {
-        return Vec::new();
+        return Loaded::default();
     }
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
             tracing::warn!("could not read {}: {e}", path.display());
-            return Vec::new();
+            return Loaded::default();
         }
     };
     let file: File = match toml::from_str(&text) {
         Ok(f) => f,
         Err(e) => {
             tracing::warn!("could not parse {}: {e}", path.display());
-            return Vec::new();
+            return Loaded::default();
         }
     };
-    file.presets
-        .into_iter()
-        .filter(|p| match validates(p) {
-            true => true,
-            false => {
-                tracing::warn!("dropping preset '{}': it does not validate", p.name);
-                false
-            }
-        })
-        .collect()
+    let mut presets = Vec::new();
+    let mut dropped = Vec::new();
+    for p in file.presets {
+        if validates(&p) {
+            presets.push(p);
+        } else {
+            tracing::warn!("dropping preset '{}': it does not validate", p.name);
+            dropped.push(p);
+        }
+    }
+    Loaded { presets, dropped }
 }
 
 /// Whether a preset's look would survive `config::validate` -- the same gate the settings
@@ -123,7 +136,9 @@ mod tests {
     fn a_missing_file_loads_as_an_empty_library() {
         let p = tmp("missing");
         assert!(!p.exists());
-        assert!(load(&p).is_empty());
+        let loaded = load(&p);
+        assert!(loaded.presets.is_empty());
+        assert!(loaded.dropped.is_empty());
         assert!(!p.exists(), "loading must not create the file");
     }
 
@@ -131,34 +146,80 @@ mod tests {
     fn presets_round_trip_through_the_file() {
         let p = tmp("round-trip");
         save(&p, &[sample()]).unwrap();
-        assert_eq!(load(&p), vec![sample()]);
+        let loaded = load(&p);
+        assert_eq!(loaded.presets, vec![sample()]);
+        assert!(loaded.dropped.is_empty());
     }
 
     #[test]
     fn saving_an_empty_library_leaves_a_file_that_loads_as_empty() {
         let p = tmp("empty");
         save(&p, &[]).unwrap();
-        assert!(load(&p).is_empty());
+        assert!(load(&p).presets.is_empty());
     }
 
     #[test]
     fn a_malformed_file_loads_as_an_empty_library_rather_than_failing() {
         let p = tmp("malformed");
         fs::write(&p, "[[preset\nname = \"broken\"\n").unwrap();
-        assert!(load(&p).is_empty());
+        let loaded = load(&p);
+        assert!(loaded.presets.is_empty());
+        assert!(loaded.dropped.is_empty());
     }
 
     /// A hand-edited preset with a value the renderer would refuse is dropped, not applied:
     /// applying it would leave the settings window stuck on "Invalid config" with no way back.
+    /// It is not lost, though -- see `Loaded::dropped` and the round-trip test below.
     #[test]
     fn a_preset_that_would_not_validate_is_dropped() {
         let p = tmp("invalid");
         let mut bad = sample();
         bad.name = "Bad".to_string();
         bad.style.opacity = 3.0;
-        save(&p, &[bad, sample()]).unwrap();
+        save(&p, &[bad.clone(), sample()]).unwrap();
 
         let loaded = load(&p);
-        assert_eq!(loaded, vec![sample()], "the valid one survives");
+        assert_eq!(loaded.presets, vec![sample()], "the valid one survives");
+        assert_eq!(
+            loaded.dropped,
+            vec![bad],
+            "the invalid one is not thrown away"
+        );
+    }
+
+    /// The whole point of `Loaded::dropped`: a preset that fails `config::validate` must
+    /// survive being written back out. This is what `Library::dropped` plus
+    /// `SettingsApp::persist_presets` (which writes `user()` followed by `dropped()`) rely on
+    /// -- a rewrite of `presets.toml` must not erase an entry the settings window could not
+    /// use, only entries the user actually removed.
+    #[test]
+    fn an_invalid_preset_survives_a_load_then_rewrite_then_load_round_trip() {
+        let p = tmp("invalid-round-trip");
+        let mut bad = sample();
+        bad.name = "Bad".to_string();
+        bad.style.opacity = 3.0;
+        save(&p, &[bad.clone(), sample()]).unwrap();
+
+        let first = load(&p);
+        assert_eq!(first.presets, vec![sample()]);
+        assert_eq!(first.dropped, vec![bad.clone()]);
+
+        // What `persist_presets` writes: the usable presets followed by the ones the library
+        // could not use.
+        let mut rewritten = first.presets.clone();
+        rewritten.extend(first.dropped.clone());
+        save(&p, &rewritten).unwrap();
+
+        let second = load(&p);
+        assert_eq!(
+            second.presets,
+            vec![sample()],
+            "still loads after the rewrite"
+        );
+        assert_eq!(
+            second.dropped,
+            vec![bad],
+            "the invalid preset is still in the file after the rewrite"
+        );
     }
 }

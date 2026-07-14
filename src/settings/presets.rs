@@ -110,6 +110,14 @@ pub fn style_eq(a: &Style, b: &Style) -> bool {
 pub struct Library {
     all: Vec<Preset>,
     n_builtin: usize,
+    /// User presets the library could not use: rejected by `config::validate` on load (see
+    /// `presets_io::Loaded::dropped`, folded in via `add_dropped`), or dropped right here in
+    /// `new` for colliding with an existing name. Never part of `all` -- not pickable, not
+    /// resolvable by `find`/`resolve`, not deletable -- but kept around rather than discarded:
+    /// the settings window must not delete data it did not understand, and this is what lets
+    /// `SettingsApp::persist_presets` write these back out instead of erasing them on the next
+    /// save.
+    dropped: Vec<Preset>,
 }
 
 impl Library {
@@ -117,27 +125,35 @@ impl Library {
     /// both possible only via a hand-edited `presets.toml`, since `check_name` blocks either
     /// from the settings window. Either would leave `find` permanently resolving that name to
     /// the earlier entry, so `apply` on the later, shadowed one and `resolve` afterwards would
-    /// disagree about which preset is active. The colliding entry is dropped rather than kept
-    /// under a renamed or duplicate label, so the log is the only record of it -- there is no
-    /// rule for what a machine-picked new name should be.
+    /// disagree about which preset is active. The colliding entry is dropped from `all` rather
+    /// than kept under a renamed or duplicate label -- there is no rule for what a
+    /// machine-picked new name should be -- but it is not thrown away: it lands in `dropped`,
+    /// so it survives a rewrite of `presets.toml` even though the picker can never reach it.
     pub fn new(user: Vec<Preset>) -> Self {
         let mut all = builtin();
         let n_builtin = all.len();
+        let mut dropped = Vec::new();
         for preset in user {
             if all[..n_builtin].iter().any(|p| p.name == preset.name) {
                 tracing::warn!(
                     "dropping user preset '{}': name collides with a built-in",
                     preset.name
                 );
+                dropped.push(preset);
                 continue;
             }
             if all[n_builtin..].iter().any(|p| p.name == preset.name) {
                 tracing::warn!("dropping user preset '{}': duplicate name", preset.name);
+                dropped.push(preset);
                 continue;
             }
             all.push(preset);
         }
-        Self { all, n_builtin }
+        Self {
+            all,
+            n_builtin,
+            dropped,
+        }
     }
 
     pub fn all(&self) -> &[Preset] {
@@ -147,6 +163,24 @@ impl Library {
     /// The user's own presets -- what `presets_io::save` writes. The built-ins are not saved.
     pub fn user(&self) -> &[Preset] {
         &self.all[self.n_builtin..]
+    }
+
+    /// Presets the library rejected: name collisions dropped by `new`, plus whatever
+    /// `add_dropped` folded in from `presets_io::Loaded::dropped`. Not part of `all()` -- not
+    /// pickable, not resolvable, not deletable -- so `persist_presets` is what makes this
+    /// accessor useful: it writes `user()` followed by `dropped()`, so a rewrite of
+    /// `presets.toml` preserves entries the library could not use instead of dropping them a
+    /// second time, permanently.
+    pub fn dropped(&self) -> &[Preset] {
+        &self.dropped
+    }
+
+    /// Folds in presets rejected before the library was even built. `presets_io::load`'s
+    /// validation gate runs on the raw file contents, before any `Preset` reaches `new`, so its
+    /// rejects have to be carried in from outside rather than discovered here. Does not touch
+    /// `all`.
+    pub fn add_dropped(&mut self, more: Vec<Preset>) {
+        self.dropped.extend(more);
     }
 
     pub fn is_builtin(&self, i: usize) -> bool {
@@ -536,7 +570,8 @@ mod tests {
     /// A hand-edited `presets.toml` naming a preset after a built-in cannot get past
     /// `check_name` (that only guards the settings window's own Save-as box), so it has to be
     /// rejected here instead -- otherwise `find` would resolve that name to the built-in
-    /// forever, and the user's entry would sit in the list unreachable by name.
+    /// forever, and the user's entry would sit in the list unreachable by name. It still must
+    /// not be erased outright, though -- see `dropped()`.
     #[test]
     fn new_drops_a_user_preset_whose_name_collides_with_a_builtin() {
         let l = Library::new(vec![Preset {
@@ -549,11 +584,14 @@ mod tests {
         }]);
         assert_eq!(l.all().len(), BUILTIN_COUNT, "the colliding entry is gone");
         assert!(l.user().is_empty());
+        assert_eq!(l.dropped().len(), 1, "it is kept, just not in all()");
+        assert_eq!(l.dropped()[0].name, "D-Day");
+        assert_eq!(l.dropped()[0].lines[0].text, "shadowed");
     }
 
     /// Two user presets sharing a name are just as unreachable by `find` as a built-in
     /// collision -- only the first is ever resolved. The later one is dropped rather than
-    /// silently shadowing the first.
+    /// silently shadowing the first, but (as above) not erased.
     #[test]
     fn new_drops_a_later_user_preset_that_duplicates_an_earlier_ones_name() {
         let l = Library::new(vec![
@@ -576,5 +614,98 @@ mod tests {
         ]);
         assert_eq!(l.user().len(), 1);
         assert_eq!(l.user()[0].lines[0].text, "first");
+        assert_eq!(l.dropped().len(), 1);
+        assert_eq!(l.dropped()[0].lines[0].text, "second");
+    }
+
+    /// Finding 1: a name-colliding preset must survive being written back out. This is what
+    /// `SettingsApp::persist_presets` relies on -- it writes `user()` followed by `dropped()`,
+    /// so feeding that combined list back into `Library::new` (simulating the next launch,
+    /// after a `presets_io::save` + `presets_io::load` round trip) must still contain the
+    /// colliding preset, not silently lose it on a second pass.
+    #[test]
+    fn a_name_colliding_preset_survives_a_persist_and_reload_round_trip() {
+        let l = Library::new(vec![Preset {
+            name: "D-Day".to_string(),
+            style: Style::default(),
+            lines: vec![Line {
+                text: "shadowed".to_string(),
+                ..Line::default()
+            }],
+        }]);
+
+        // What `persist_presets` writes to `presets.toml`.
+        let mut to_save = l.user().to_vec();
+        to_save.extend(l.dropped().iter().cloned());
+        assert_eq!(to_save.len(), 1, "the colliding preset is in the write-out");
+
+        // What the next launch builds from that file.
+        let reloaded = Library::new(to_save);
+        assert_eq!(
+            reloaded.dropped().len(),
+            1,
+            "still dropped, but still present, after a full round trip"
+        );
+        assert_eq!(reloaded.dropped()[0].name, "D-Day");
+    }
+
+    /// Finding 1: whichever way a preset is dropped -- a name collision in `new`, or a failed
+    /// `config::validate` folded in via `add_dropped` -- it must be a true dead end: absent
+    /// from `all()`, unreachable by `find`, unmatched by `resolve`, and outside every index
+    /// `delete` could ever be called with.
+    #[test]
+    fn dropped_presets_are_unreachable_by_all_find_resolve_and_delete() {
+        let mut l = Library::new(vec![Preset {
+            name: "D-Day".to_string(), // collides with a builtin
+            style: Style::default(),
+            lines: vec![Line {
+                text: "shadowed".to_string(),
+                ..Line::default()
+            }],
+        }]);
+        let invalid = Preset {
+            name: "Bad".to_string(), // unique name; would-be validation failure
+            style: Style {
+                opacity: 3.0,
+                ..Style::default()
+            },
+            lines: vec![Line {
+                text: "invalid".to_string(),
+                ..Line::default()
+            }],
+        };
+        l.add_dropped(vec![invalid.clone()]);
+
+        assert_eq!(l.dropped().len(), 2, "both dropped presets are kept");
+
+        // Not in all(): every slot in all() is a builtin or a well-formed user preset.
+        assert_eq!(l.all().len(), BUILTIN_COUNT, "neither entered all()");
+        assert!(l.all().iter().all(|p| p.name != "Bad"));
+
+        // Not reachable by find(): "D-Day" resolves to the *builtin* of that name, not the
+        // dropped, shadowed one; "Bad" resolves to nothing at all.
+        let day = l.find("D-Day").expect("the builtin still resolves");
+        assert!(l.is_builtin(day), "resolves to the builtin, not the drop");
+        assert_eq!(l.find("Bad"), None);
+
+        // Not reachable by resolve(): neither dropped preset's look matches anything in
+        // all(), so labelling the config with its name and asking `resolve` for it lands on
+        // Custom rather than picking the dropped entry up.
+        assert_eq!(
+            l.resolve(Some("Bad"), &invalid.lines, &invalid.style),
+            Active::Custom
+        );
+
+        // Not reachable by delete(): every valid index into all() names a builtin or a
+        // surviving user preset, never a dropped one, so no index deletes it.
+        for i in 0..l.all().len() {
+            let before = l.dropped().len();
+            l.delete(i);
+            assert_eq!(
+                l.dropped().len(),
+                before,
+                "deleting a real slot must not touch dropped()"
+            );
+        }
     }
 }

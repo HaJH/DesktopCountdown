@@ -143,7 +143,9 @@ impl SettingsApp {
         let cfg_path = crate::paths::config_path()?;
         let cfg = config::load_or_create(&cfg_path)?;
         let presets_path = crate::paths::presets_path()?;
-        let library = presets::Library::new(presets_io::load(&presets_path));
+        let loaded = presets_io::load(&presets_path);
+        let mut library = presets::Library::new(loaded.presets);
+        library.add_dropped(loaded.dropped);
         let monitors = platform::enumerate_monitors()
             .unwrap_or_default()
             .into_iter()
@@ -358,10 +360,13 @@ impl SettingsApp {
                 .on_hover_text("Throw away the changes and go back to the preset")
                 .clicked()
             {
-                // Reset means "go back to the preset I was on", so cancel any held-back
-                // preset pick to prevent the discard prompt's apply-and-move-on arm from
-                // landing on the picked preset instead.
-                self.pending_preset = None;
+                // Reset means "cancel the switch, go back to the preset I was on" -- the whole
+                // carried-forward intent has to go, not just `pending_preset`. Clearing only
+                // that would leave a Save-as box's `then_apply` armed if it was opened from the
+                // discard prompt (pick a preset while Modified -> "Save as..." -> Reset): the
+                // look is clean again, but saving would still apply the preset Reset just
+                // backed away from.
+                self.forget_pending();
                 if let Some(i) = base {
                     self.library.apply(i, &mut self.cfg);
                     self.mark_dirty();
@@ -486,16 +491,29 @@ impl SettingsApp {
                 .add_enabled(savable, egui::Button::new(save_label))
                 .clicked()
             {
-                let lines = self.cfg.lines.clone();
-                let style = self.cfg.style.clone();
-                let i = self.library.save_as(&state.name, &lines, &style);
-                self.cfg.preset = Some(self.library.all()[i].name.clone());
-                self.persist_presets();
-                if let Some(next) = state.then_apply {
-                    self.library.apply(next, &mut self.cfg);
+                // `status` (and the `savable` it gates the button on) was computed before the
+                // `TextEdit` above could mutate `state.name` this frame, so it can be one
+                // keystroke stale -- a click landing in the same frame as an edit that changes
+                // what `check_name` would say. Re-check against the name as typed rather than
+                // trust the button having been enabled: saving under a built-in's name would
+                // hand `Library::save_as` a name `check_name` was supposed to have blocked,
+                // and `Library::new` would only drop it again on the next launch.
+                let fresh = self.library.check_name(&state.name);
+                if matches!(
+                    fresh,
+                    presets::NameStatus::New | presets::NameStatus::Overwrite
+                ) {
+                    let lines = self.cfg.lines.clone();
+                    let style = self.cfg.style.clone();
+                    let i = self.library.save_as(&state.name, &lines, &style);
+                    self.cfg.preset = Some(self.library.all()[i].name.clone());
+                    self.persist_presets();
+                    if let Some(next) = state.then_apply {
+                        self.library.apply(next, &mut self.cfg);
+                    }
+                    self.mark_dirty();
+                    keep_open = false;
                 }
-                self.mark_dirty();
-                keep_open = false;
             }
             if ui.button("Cancel").clicked() {
                 keep_open = false;
@@ -520,11 +538,17 @@ impl SettingsApp {
         }
     }
 
-    /// Writes the user's presets to `presets.toml`. Failure is shown in the error banner and
-    /// otherwise ignored: the library in memory is still right, and nothing on the wallpaper
-    /// depends on this file.
+    /// Writes the user's presets to `presets.toml`: the ones the picker can use, followed by
+    /// the ones the library could not (`Library::dropped`) -- a name collision, or a value that
+    /// failed `config::validate` on load. Writing only `user()` would let the very next rewrite
+    /// erase a hand-edited preset the settings window merely could not make sense of; appending
+    /// `dropped()` is what keeps that data alive instead. Failure is shown in the error banner
+    /// and otherwise ignored: the library in memory is still right, and nothing on the
+    /// wallpaper depends on this file.
     fn persist_presets(&mut self) {
-        if let Err(e) = presets_io::save(&self.presets_path, self.library.user()) {
+        let mut to_save = self.library.user().to_vec();
+        to_save.extend(self.library.dropped().iter().cloned());
+        if let Err(e) = presets_io::save(&self.presets_path, &to_save) {
             self.error = Some(format!("Could not save presets: {e}"));
         }
     }

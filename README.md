@@ -139,6 +139,12 @@ you a look you cared to keep; a preset you saved can be deleted again, which dro
 leaves the wallpaper as it is. Your own presets live in `presets.toml`, next to `config.toml` —
 the renderer does not watch that file, so saving one does not make the countdown redraw.
 
+`config.toml` also carries a `preset` key naming which preset is active. That is bookkeeping for
+the settings window only — the renderer ignores it and draws from `[style]` and `[[line]]`
+alone — so there is no need to set it by hand. If it is missing, or names a preset that no
+longer exists, the settings window recovers the label by matching your lines and style against
+the presets it knows, rather than showing `Custom` for no reason.
+
 ### Per-monitor overrides
 
 The settings window has a tab per monitor. Turning on the override copies the current global
@@ -202,6 +208,11 @@ countdown only ever draws digits.
   only the per-monitor overrides go unmatched on the other system.
 - At the target time the countdown stops at `00:00:00`. It does not count up and does not
   notify.
+- **Upgrading a `config.toml` from before lines were configurable:** if it has no `[[line]]`
+  section, one is filled in for you — but always with Clock only, even if the old file had
+  `show_summary_line = true`. That flag no longer decides anything, so the summary line does
+  not carry over automatically; pick **Summary + Clock** in the settings window afterwards if
+  you want it back.
 
 ## Documentation
 
