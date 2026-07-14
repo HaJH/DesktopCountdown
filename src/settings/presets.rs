@@ -2,7 +2,7 @@
 //! and the library the settings window picks from. Pure logic, no egui, no I/O.
 
 use crate::config::{
-    Line, Style, DEFAULT_PRESET, MAIN_TEMPLATE, SUMMARY_SIZE_RATIO, SUMMARY_TEMPLATE,
+    Config, Line, Style, DEFAULT_PRESET, MAIN_TEMPLATE, SUMMARY_SIZE_RATIO, SUMMARY_TEMPLATE,
 };
 
 /// A named snapshot of the whole look: the line list *and* the shared style. Picking a preset
@@ -66,6 +66,97 @@ pub fn builtin() -> Vec<Preset> {
             ],
         ),
     ]
+}
+
+/// Which preset the current look sits on, and whether anything has been changed on top of it.
+/// Computed every frame from the config -- never stored, so it cannot go stale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Active {
+    /// Exactly the preset at this index.
+    Clean(usize),
+    /// Started from the preset at this index; edits are layered on top.
+    Modified(usize),
+    /// Matches no preset, and no label points anywhere useful.
+    Custom,
+}
+
+/// `Style` derives `PartialEq` over every field, including the legacy `show_summary_line`,
+/// which only ever holds a value on a `Style` parsed from an old config.toml -- no preset
+/// carries it. Comparing it would leave such a config `Modified` against every preset,
+/// forever, over a field nothing reads.
+pub fn style_eq(a: &Style, b: &Style) -> bool {
+    let strip = |s: &Style| Style {
+        show_summary_line: None,
+        ..s.clone()
+    };
+    strip(a) == strip(b)
+}
+
+/// The presets the picker offers: the built-ins, then the user's own. Index into `all()` is
+/// the picker's currency -- `Active` carries one, and so does `apply`.
+pub struct Library {
+    all: Vec<Preset>,
+    n_builtin: usize,
+}
+
+impl Library {
+    pub fn new(user: Vec<Preset>) -> Self {
+        let mut all = builtin();
+        let n_builtin = all.len();
+        all.extend(user);
+        Self { all, n_builtin }
+    }
+
+    pub fn all(&self) -> &[Preset] {
+        &self.all
+    }
+
+    /// The user's own presets -- what `presets_io::save` writes. The built-ins are not saved.
+    pub fn user(&self) -> &[Preset] {
+        &self.all[self.n_builtin..]
+    }
+
+    pub fn is_builtin(&self, i: usize) -> bool {
+        i < self.n_builtin
+    }
+
+    pub fn find(&self, name: &str) -> Option<usize> {
+        self.all.iter().position(|p| p.name == name)
+    }
+
+    /// The label is a hint, not the truth. When it names a preset, the current look is compared
+    /// against that one and the answer is `Clean` or `Modified`. When it does not (missing from
+    /// an old file, or naming a preset since deleted), the look itself is matched against the
+    /// whole list -- so a config that happens to be exactly a preset gets its name back rather
+    /// than reading `Custom`.
+    pub fn resolve(&self, label: Option<&str>, lines: &[Line], style: &Style) -> Active {
+        if let Some(i) = label.and_then(|n| self.find(n)) {
+            return if self.matches(i, lines, style) {
+                Active::Clean(i)
+            } else {
+                Active::Modified(i)
+            };
+        }
+        match (0..self.all.len()).find(|&i| self.matches(i, lines, style)) {
+            Some(i) => Active::Clean(i),
+            None => Active::Custom,
+        }
+    }
+
+    fn matches(&self, i: usize, lines: &[Line], style: &Style) -> bool {
+        let p = &self.all[i];
+        p.lines == lines && style_eq(&p.style, style)
+    }
+
+    /// Drops the preset's whole look onto the config and moves the label to it. Everything the
+    /// user had layered on top is gone -- the caller is what guards that (see the settings
+    /// window's discard prompt).
+    pub fn apply(&self, i: usize, cfg: &mut Config) {
+        let p = &self.all[i];
+        cfg.lines = p.lines.clone();
+        cfg.style = p.style.clone();
+        cfg.preset = Some(p.name.clone());
+    }
 }
 
 #[cfg(test)]
@@ -140,5 +231,141 @@ mod tests {
     #[test]
     fn builtin_count_matches_the_list() {
         assert_eq!(builtin().len(), BUILTIN_COUNT);
+    }
+
+    fn lib() -> Library {
+        Library::new(vec![Preset {
+            name: "Mine".to_string(),
+            style: Style {
+                size_px: 99.0,
+                ..Style::default()
+            },
+            lines: vec![Line {
+                text: "hi".to_string(),
+                ..Line::default()
+            }],
+        }])
+    }
+
+    #[test]
+    fn user_presets_come_after_the_builtins() {
+        let l = lib();
+        assert_eq!(l.all().len(), BUILTIN_COUNT + 1);
+        assert!(l.is_builtin(0));
+        assert!(!l.is_builtin(BUILTIN_COUNT));
+        assert_eq!(l.user().len(), 1);
+        assert_eq!(l.user()[0].name, "Mine");
+    }
+
+    #[test]
+    fn a_label_whose_look_matches_resolves_clean() {
+        let l = lib();
+        let p = &l.all()[0];
+        assert_eq!(
+            l.resolve(Some(&p.name), &p.lines, &p.style),
+            Active::Clean(0)
+        );
+    }
+
+    #[test]
+    fn a_label_whose_lines_differ_resolves_modified() {
+        let l = lib();
+        let p = l.all()[0].clone();
+        let edited = vec![Line {
+            text: "edited".to_string(),
+            ..Line::default()
+        }];
+        assert_eq!(
+            l.resolve(Some(&p.name), &edited, &p.style),
+            Active::Modified(0)
+        );
+    }
+
+    /// The preset carries the style too, so a style-only edit is just as much a modification
+    /// as a line edit. This is the case a lines-only preset model would have missed.
+    #[test]
+    fn a_label_whose_style_differs_resolves_modified() {
+        let l = lib();
+        let p = l.all()[0].clone();
+        let restyled = Style {
+            size_px: 12.0,
+            ..p.style.clone()
+        };
+        assert_eq!(
+            l.resolve(Some(&p.name), &p.lines, &restyled),
+            Active::Modified(0)
+        );
+    }
+
+    /// No label (an old config.toml, or a hand-edited one) is not `Custom` on its own: the
+    /// look is matched against the list and gets its name back. This is what lets the
+    /// migration carry no code at all.
+    #[test]
+    fn a_missing_label_recovers_the_name_from_the_look() {
+        let l = lib();
+        let p = l.all()[1].clone();
+        assert_eq!(l.resolve(None, &p.lines, &p.style), Active::Clean(1));
+    }
+
+    #[test]
+    fn a_missing_label_with_no_matching_look_is_custom() {
+        let l = lib();
+        let odd = vec![Line {
+            text: "nothing like a preset".to_string(),
+            ..Line::default()
+        }];
+        assert_eq!(l.resolve(None, &odd, &Style::default()), Active::Custom);
+    }
+
+    /// A deleted preset leaves its name behind in config.toml. That is not an error.
+    #[test]
+    fn a_label_naming_no_preset_falls_back_to_matching_the_look() {
+        let l = lib();
+        let p = l.all()[2].clone();
+        assert_eq!(
+            l.resolve(Some("gone"), &p.lines, &p.style),
+            Active::Clean(2)
+        );
+
+        let odd = vec![Line {
+            text: "nothing like a preset".to_string(),
+            ..Line::default()
+        }];
+        assert_eq!(
+            l.resolve(Some("gone"), &odd, &Style::default()),
+            Active::Custom
+        );
+    }
+
+    /// The legacy flag only ever exists on a config loaded from an old file; no preset carries
+    /// it. Comparing it would make such a config permanently `Modified` against every preset.
+    #[test]
+    fn the_legacy_summary_flag_is_ignored_when_comparing_styles() {
+        let legacy = Style {
+            show_summary_line: Some(false),
+            ..Style::default()
+        };
+        assert!(style_eq(&legacy, &Style::default()));
+        assert_ne!(
+            legacy,
+            Style::default(),
+            "the derived PartialEq still sees it"
+        );
+    }
+
+    #[test]
+    fn apply_replaces_lines_and_style_and_moves_the_label() {
+        let l = lib();
+        let mut cfg = crate::config::Config::default();
+        cfg.style.size_px = 11.0;
+        let i = BUILTIN_COUNT; // "Mine"
+        l.apply(i, &mut cfg);
+        assert_eq!(cfg.lines, l.all()[i].lines);
+        assert_eq!(cfg.style.size_px, 99.0);
+        assert_eq!(cfg.preset, Some("Mine".to_string()));
+        assert_eq!(
+            l.resolve(cfg.preset.as_deref(), &cfg.lines, &cfg.style),
+            Active::Clean(i)
+        );
     }
 }
