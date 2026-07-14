@@ -26,10 +26,14 @@ pub fn run(instance_name: &str) -> Result<()> {
         }
     };
 
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_inner_size([720.0, 560.0])
+        .with_title("DesktopCountdown 설정");
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     let native_options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([720.0, 560.0])
-            .with_title("DesktopCountdown 설정"),
+        viewport,
         event_loop_builder: activation_policy_hook(),
         ..Default::default()
     };
@@ -73,6 +77,39 @@ fn activation_policy_hook() -> Option<eframe::EventLoopBuilderHook> {
     #[cfg(not(target_os = "macos"))]
     {
         None
+    }
+}
+
+/// The icon for the settings window's title bar and taskbar button.
+///
+/// Windows-only in effect: winit has no window icon on macOS (the Dock tile comes from the
+/// bundle's `.icns`), so this is decoded and handed over there for nothing -- a few hundred
+/// microseconds at startup, against a `#[cfg]` split of both the call site and this function.
+///
+/// The asset is the same `assets/icon.ico` that `build.rs` compiles into the exe's icon
+/// resource and that `platform::windows::tray` loads back out of it. It is compiled in a
+/// second time here, as bytes rather than as a resource, because egui takes raw RGBA pixels
+/// and not a Windows icon handle. `image`'s ICO decoder picks the file's largest entry
+/// (256x256), which the window manager scales down for the title bar.
+///
+/// A file that fails to decode yields an iconless window, not a failed launch.
+fn window_icon() -> Option<eframe::egui::IconData> {
+    const ICON_BYTES: &[u8] = include_bytes!("../../assets/icon.ico");
+
+    match image::load_from_memory_with_format(ICON_BYTES, image::ImageFormat::Ico) {
+        Ok(image) => {
+            let image = image.into_rgba8();
+            let (width, height) = image.dimensions();
+            Some(eframe::egui::IconData {
+                rgba: image.into_raw(),
+                width,
+                height,
+            })
+        }
+        Err(e) => {
+            tracing::warn!("could not decode the window icon: {e}");
+            None
+        }
     }
 }
 

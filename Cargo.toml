@@ -28,6 +28,9 @@ serde = { version = "1", features = ["derive"] }
 toml = "1"
 notify = "8"
 tray-icon = "0.24"
+# Decodes assets/icon.ico for the settings window's icon (eframe wants raw RGBA, not a
+# Windows resource handle). eframe already pulls `image` in; only the ICO decoder is new.
+image = { version = "0.25", default-features = false, features = ["ico"] }
 # Matches the version epaint 0.35 uses internally, so font-parsing behavior stays
 # consistent between our pre-validation and egui's own loading.
 skrifa = "0.42"

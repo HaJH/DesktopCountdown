@@ -852,6 +852,7 @@ dependencies = [
  "block2 0.6.2",
  "dispatch2",
  "eframe",
+ "image",
  "jiff",
  "libc",
  "notify",
