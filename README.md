@@ -14,7 +14,7 @@ animated-wallpaper apps like Wallpaper Engine.
 - **Lines you compose yourself.** The display is a list of lines, each a template string. Put a
   clock, a day count, a caption, or all three — in any order.
 - **Tokens.** `{daysTotal} days left`, `D-{daysTotal}`, `{hh}:{mm}:{ss}`, `{months}m {weeks}w
-  {days}d` — 13 tokens covering every part of the remaining time.
+  {days}d` — 21 tokens covering every part of the remaining time.
 - **Presets.** A preset is a named snapshot of the whole look. Pick one, tweak it, save your own.
 - **Live editing.** Drag a slider and the wallpaper follows it in real time.
 - **Daily countdown.** A second, recurring target: a clock time (say 18:00) that every day
