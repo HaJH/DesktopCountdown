@@ -88,15 +88,6 @@ mod tests {
     }
 
     #[test]
-    fn the_classic_preset_is_the_default_list() {
-        let classic = PRESETS
-            .iter()
-            .find(|p| p.name == "Classic")
-            .expect("Classic preset");
-        assert_eq!(classic.build(), crate::config::default_lines(true));
-    }
-
-    #[test]
     fn every_preset_builds_at_least_one_line_and_leaves_the_rest_at_the_defaults() {
         for p in &PRESETS {
             let lines = p.build();

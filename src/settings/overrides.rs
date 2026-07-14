@@ -194,7 +194,7 @@ mod tests {
             |o| o.letter_spacing_em = Some(0.0),
             |o| o.shadow = Some(true),
             |o| o.tabular_figures = Some(true),
-            |o| o.lines = Some(crate::config::default_lines(true)),
+            |o| o.lines = Some(crate::config::default_lines()),
         ];
         for (i, set) in setters.iter().enumerate() {
             let mut o = base.clone();

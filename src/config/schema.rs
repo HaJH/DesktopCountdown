@@ -83,8 +83,8 @@ fn d_align() -> Align {
     Align::Center
 }
 
-/// The summary line's em size as a fraction of `size_px`. Was hard-coded in the renderer as
-/// `SUMMARY_RATIO` before lines became configurable; kept as the classic preset's value.
+/// The summary line's em size as a fraction of `size_px`. Hard-coded in the renderer as
+/// `SUMMARY_RATIO` before lines became configurable; now the `Summary + Clock` preset's value.
 pub const SUMMARY_SIZE_RATIO: f32 = 0.28;
 pub const SUMMARY_TEMPLATE: &str = "{months}m {weeks}w {days}d";
 pub const MAIN_TEMPLATE: &str = "{hh}:{mm}:{ss}";
@@ -128,22 +128,20 @@ impl Default for Line {
     }
 }
 
-/// The classic two-line countdown: an optional summary above the clock.
-pub fn default_lines(summary: bool) -> Vec<Line> {
-    let mut v = Vec::with_capacity(2);
-    if summary {
-        v.push(Line {
-            text: SUMMARY_TEMPLATE.to_string(),
-            size_ratio: SUMMARY_SIZE_RATIO,
-            ..Line::default()
-        });
-    }
-    v.push(Line {
+/// The line list a fresh config starts with, and what `migrate` fills an empty one with:
+/// the clock, on its own. Everything richer is a preset the user picks.
+pub fn default_lines() -> Vec<Line> {
+    vec![Line {
         text: MAIN_TEMPLATE.to_string(),
         ..Line::default()
-    });
-    v
+    }]
 }
+
+/// The preset `default_lines` corresponds to. `Config::default` labels itself with it so a
+/// fresh install opens the settings window already sitting on a named preset rather than on
+/// `Custom`. Must stay in step with `settings::presets::builtin`, which the test
+/// `the_default_config_matches_its_own_label` in that module checks.
+pub const DEFAULT_PRESET: &str = "Clock only";
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -170,10 +168,11 @@ pub struct Style {
     pub shadow: bool,
     #[serde(default = "d_true")]
     pub tabular_figures: bool,
-    /// Legacy. Older config files carried this flag instead of a `[[line]]` list; `migrate`
-    /// turns it into one and nothing else reads it. Never written back
-    /// (`skip_serializing`), but still accepted on read — `deny_unknown_fields` would reject
-    /// an existing file otherwise.
+    /// Legacy. Older config files carried this flag instead of a `[[line]]` list. Nothing
+    /// reads it any more -- not even `migrate`, which now fills an empty list with the
+    /// current default regardless. The field stays only because `deny_unknown_fields` would
+    /// otherwise reject an existing file that still names it. Never written back
+    /// (`skip_serializing`), so it cannot leak into a file that does not already have it.
     #[serde(default, skip_serializing)]
     pub show_summary_line: Option<bool>,
 }
@@ -258,7 +257,7 @@ pub struct DisplayOverride {
     pub shadow: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tabular_figures: Option<bool>,
-    /// Legacy, as in `Style`. Read to migrate an older per-monitor override into a line list;
+    /// Legacy, as in `Style`. Accepted so an existing config.toml still parses; never read,
     /// never written back.
     #[serde(default, skip_serializing)]
     pub show_summary_line: Option<bool>,
@@ -277,6 +276,16 @@ fn d_target() -> DateTime {
 pub struct Config {
     #[serde(default = "d_target")]
     pub target: DateTime,
+    /// Which preset the current lines and style came from. Written and read only by the
+    /// settings window -- the renderer draws from the fully-resolved `[[line]]` and
+    /// `[style]` below and never looks at this. A name that no longer exists (the preset
+    /// was deleted) or a missing label is not an error: the settings window recovers a
+    /// name by matching the current lines and style against the presets it knows, and
+    /// falls back to `Custom`.
+    ///
+    /// Must stay above `[style]`: TOML rejects a scalar written after a table.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preset: Option<String>,
     #[serde(default)]
     pub style: Style,
     #[serde(default)]
@@ -295,29 +304,22 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             target: d_target(),
+            preset: Some(DEFAULT_PRESET.to_string()),
             style: Style::default(),
             layout: Layout::default(),
             general: General::default(),
-            lines: default_lines(true),
+            lines: default_lines(),
             displays: Vec::new(),
         }
     }
 }
 
 /// Fills in the `[[line]]` list for a config written before lines existed (or hand-edited to
-/// have none). The legacy `show_summary_line` flag is the only thing that decides the
-/// synthesized list. It is left in place afterwards — it is never serialized, so it cannot
-/// leak back into the file — but nothing else reads it.
+/// have none). The list is the current default; the legacy `show_summary_line` flag no longer
+/// decides anything.
 pub fn migrate(cfg: &mut Config) {
     if cfg.lines.is_empty() {
-        cfg.lines = default_lines(cfg.style.show_summary_line.unwrap_or(true));
-    }
-    for d in &mut cfg.displays {
-        if d.lines.is_none() {
-            if let Some(summary) = d.show_summary_line {
-                d.lines = Some(default_lines(summary));
-            }
-        }
+        cfg.lines = default_lines();
     }
 }
 
@@ -470,15 +472,66 @@ mod tests {
     }
 
     #[test]
-    fn default_config_has_the_classic_two_lines() {
+    fn the_default_config_is_a_single_clock_line() {
         let cfg = Config::default();
-        assert_eq!(cfg.lines.len(), 2);
-        assert_eq!(cfg.lines[0].text, "{months}m {weeks}w {days}d");
-        assert_eq!(cfg.lines[0].size_ratio, 0.28);
-        assert_eq!(cfg.lines[0].align, Align::Center);
-        assert_eq!(cfg.lines[0].color, None);
-        assert_eq!(cfg.lines[1].text, "{hh}:{mm}:{ss}");
-        assert_eq!(cfg.lines[1].size_ratio, 1.0);
+        assert_eq!(
+            cfg.lines,
+            vec![Line {
+                text: "{hh}:{mm}:{ss}".to_string(),
+                size_ratio: 1.0,
+                align: Align::Center,
+                color: None,
+            }]
+        );
+        assert_eq!(cfg.preset, Some("Clock only".to_string()));
+    }
+
+    #[test]
+    fn migrate_fills_a_config_without_lines_with_the_default_list() {
+        let mut cfg: Config = toml::from_str(MINIMAL).unwrap();
+        assert!(cfg.lines.is_empty());
+        migrate(&mut cfg);
+        assert_eq!(cfg.lines, default_lines());
+    }
+
+    /// The legacy flag no longer decides anything: a config written before `[[line]]`
+    /// existed gets the current default, whatever it said about the summary line.
+    #[test]
+    fn migrate_ignores_the_legacy_summary_flag() {
+        let mut cfg: Config =
+            toml::from_str("target = \"2026-10-24T09:00:00\"\n[style]\nshow_summary_line = true\n")
+                .unwrap();
+        migrate(&mut cfg);
+        assert_eq!(cfg.lines, default_lines());
+        assert_eq!(cfg.lines.len(), 1);
+        assert_eq!(cfg.lines[0].text, "{hh}:{mm}:{ss}");
+    }
+
+    /// The label is not serialized when absent, so an old file that never had one does
+    /// not gain an empty key on the next save.
+    #[test]
+    fn a_config_without_a_preset_label_round_trips_without_one() {
+        let mut cfg: Config = toml::from_str(MINIMAL).unwrap();
+        assert_eq!(cfg.preset, None);
+        migrate(&mut cfg);
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        assert!(
+            !text.contains("preset"),
+            "unexpected preset key in:\n{text}"
+        );
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.preset, None);
+    }
+
+    #[test]
+    fn a_preset_label_round_trips() {
+        let cfg = Config {
+            preset: Some("My look".to_string()),
+            ..Config::default()
+        };
+        let text = toml::to_string_pretty(&cfg).unwrap();
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.preset, Some("My look".to_string()));
     }
 
     #[test]
@@ -580,26 +633,6 @@ text = "D-{daysTotal}"
     }
 
     #[test]
-    fn migrate_synthesizes_the_classic_list_for_a_config_without_lines() {
-        let mut cfg: Config = toml::from_str(MINIMAL).unwrap();
-        assert!(cfg.lines.is_empty());
-        migrate(&mut cfg);
-        assert_eq!(cfg.lines, default_lines(true));
-    }
-
-    #[test]
-    fn migrate_honours_the_legacy_summary_flag() {
-        let mut cfg: Config = toml::from_str(
-            "target = \"2026-10-24T09:00:00\"\n[style]\nshow_summary_line = false\n",
-        )
-        .unwrap();
-        migrate(&mut cfg);
-        assert_eq!(cfg.lines, default_lines(false));
-        assert_eq!(cfg.lines.len(), 1);
-        assert_eq!(cfg.lines[0].text, "{hh}:{mm}:{ss}");
-    }
-
-    #[test]
     fn migrate_leaves_an_existing_list_alone() {
         let mut cfg: Config = toml::from_str(
             r#"
@@ -617,8 +650,11 @@ text = "kept"
         assert_eq!(cfg.lines[0].text, "kept");
     }
 
+    /// A monitor's legacy flag no longer synthesizes a line list either. The monitor keeps
+    /// no list of its own, which means it follows the global one -- the same thing the flag
+    /// used to mean when it matched the global setting, and a harmless default when it did not.
     #[test]
-    fn migrate_converts_a_legacy_per_monitor_summary_flag_into_a_line_list() {
+    fn migrate_leaves_a_monitor_with_only_a_legacy_summary_flag_following_the_globals() {
         let mut cfg: Config = toml::from_str(
             r#"
 target = "2026-10-24T09:00:00"
@@ -630,7 +666,7 @@ show_summary_line = false
         )
         .unwrap();
         migrate(&mut cfg);
-        assert_eq!(cfg.displays[0].lines, Some(default_lines(false)));
+        assert_eq!(cfg.displays[0].lines, None);
     }
 
     #[test]

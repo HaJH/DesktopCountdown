@@ -82,7 +82,7 @@ mod tests {
     }
 
     #[test]
-    fn a_legacy_file_without_lines_gains_the_classic_list_on_load() {
+    fn a_legacy_file_without_lines_gains_the_default_list_on_load() {
         let p = tmp("legacy");
         fs::write(
             &p,
@@ -90,7 +90,7 @@ mod tests {
         )
         .unwrap();
         let cfg = load_or_create(&p).unwrap();
-        assert_eq!(cfg.lines, crate::config::default_lines(false));
+        assert_eq!(cfg.lines, crate::config::default_lines());
     }
 
     #[test]
