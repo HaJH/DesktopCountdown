@@ -80,6 +80,10 @@ block2 = "0.6"
 dispatch2 = "0.3"
 libc = "0.2"           # flock
 png = "0.17"           # menu bar icon
+# Only for `EventLoopBuilderExtMacOS` (see `settings::run`). Must resolve to the same winit
+# eframe pulls in, or the trait would apply to a different `EventLoopBuilder` type than the
+# one eframe hands the hook.
+winit = "0.30"
 objc2-app-kit = { version = "0.3", features = [
     "NSApplication",
     "NSColor",

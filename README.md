@@ -1,7 +1,7 @@
 # DesktopCountdown
 
-A countdown that lives on your Windows wallpaper — under the desktop icons, above whatever
-else is drawing your background.
+A countdown that lives on your wallpaper — under the desktop icons, above whatever else is
+drawing your background. Windows and macOS.
 
 ![The countdown painted into the wallpaper layer](docs/screenshot.png)
 
@@ -26,31 +26,67 @@ animated-wallpaper apps like Wallpaper Engine.
 
 ## Install
 
-Grab `desktop-countdown.exe` from the [latest
-release](https://github.com/HaJH/DesktopCountdown/releases) and run it. It is a single
-self-contained binary — the C runtime is linked statically and everything else it uses
-(Direct2D, DirectWrite, DirectComposition) ships with Windows. There is nothing to install and
-no console window; look for the tray icon.
+Both builds are on the [latest release](https://github.com/HaJH/DesktopCountdown/releases).
 
-To build it yourself you need [Rust](https://rustup.rs) (1.92+) and Windows 10/11:
+### Windows
+
+Grab `desktop-countdown.exe` and run it. It is a single self-contained binary — the C runtime
+is linked statically and everything else it uses (Direct2D, DirectWrite, DirectComposition)
+ships with Windows. There is nothing to install and no console window; look for the tray icon.
+
+### macOS 11+
+
+Grab `DesktopCountdown-macos-universal.zip` (Apple silicon and Intel in one binary), unzip it,
+and move `DesktopCountdown.app` to `/Applications`. Look for the icon in the menu bar — if the
+bar is crowded, macOS may push it off the end, so make room before deciding it did not start.
+
+**The app is not notarized, so macOS will refuse to open it the first time.** Signing up for
+notarization costs $99 a year, which is not worth it for this. Two ways past it:
+
+The fast way — strip the quarantine flag the browser attached, then open it normally:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/DesktopCountdown.app
+```
+
+Or download it with `curl`, which never attaches the flag in the first place, and it just opens:
+
+```sh
+curl -L -o dc.zip https://github.com/HaJH/DesktopCountdown/releases/latest/download/DesktopCountdown-macos-universal.zip
+```
+
+The GUI way — double-click the app, let it be blocked, then go to **System Settings → Privacy
+& Security**, scroll to the bottom, and click **Open Anyway** next to the message about
+DesktopCountdown. (Control-clicking the app and choosing Open used to work; macOS 15 removed
+that shortcut.)
+
+### From source
+
+You need [Rust](https://rustup.rs) (1.92+).
 
 ```
 cargo build --release
 ```
 
-The result is at `target\release\desktop-countdown.exe`. (`build.bat` does the same and can be
-double-clicked.)
+The result is `target/release/desktop-countdown` (`.exe` on Windows; `build.bat` does the same
+and can be double-clicked). A `cargo run` on macOS behaves like the bundled app — it sets the
+same accessory activation policy at runtime — so there is no need to build a bundle to try it.
 
 | Command | What it does |
 |---|---|
-| `desktop-countdown.exe` | Draws the countdown. Right-click the tray icon for the menu. |
-| `desktop-countdown.exe --settings` | Opens the settings window. |
+| `desktop-countdown` | Draws the countdown. Use the tray / menu bar icon for the menu. |
+| `desktop-countdown --settings` | Opens the settings window. |
 
 ## Configuration
 
-Right-click the tray icon → **Open settings** for the GUI. Every change is saved to
-`%APPDATA%\DesktopCountdown\config.toml` automatically and shows up on the wallpaper right
-away. You can also edit that file by hand; it is re-read about 100 ms after you save it.
+Click the tray / menu bar icon → **Open settings** for the GUI. Every change is saved
+automatically and shows up on the wallpaper right away. You can also edit the file by hand; it
+is re-read about 100 ms after you save it.
+
+| | Config | Log |
+|---|---|---|
+| Windows | `%APPDATA%\DesktopCountdown\config.toml` | `%LOCALAPPDATA%\DesktopCountdown\log.txt` |
+| macOS | `~/Library/Application Support/DesktopCountdown/config.toml` | `~/Library/Logs/DesktopCountdown/log.txt` |
 
 ### Lines and tokens
 
@@ -117,28 +153,46 @@ A monitor's line list replaces the global one wholesale. `enabled = false` hides
 on that monitor.
 
 A bad config is not applied: the previous one stays, the tray icon shows a warning, and the
-reason is written to `%LOCALAPPDATA%\DesktopCountdown\log.txt`.
+reason is written to the log file above.
 
 ## How it works
 
-Windows draws the wallpaper in a `WorkerW` window that sits below the desktop icons. The app
-finds that window (sending the undocumented `0x052C` message to `Progman` when it has to),
+The two systems reach the wallpaper layer by completely different routes, so the app has a
+backend for each (`src/platform/`). Everything above them — the config, the tokens, the layout,
+the settings window — is shared.
+
+**Windows** draws the wallpaper in a `WorkerW` window that sits below the desktop icons. The
+app finds that window (sending the undocumented `0x052C` message to `Progman` when it has to),
 creates a child of it, and composes a per-pixel-alpha visual onto it with DirectComposition.
 `UpdateLayeredWindow` is the obvious approach and does not work here — it returns `Ok` from a
 child window and draws nothing, which a spike confirmed
 (`docs/superpowers/plans/spike-result.md`).
 
-The text itself is DirectWrite: glyph outlines, measured by their *ink* rather than their line
-boxes, so the gap between lines is the gap you asked for in any font — including CJK fonts,
-whose ascent is sized for Hangul while a countdown only ever draws digits.
+**macOS** has no wallpaper window to find. A borderless `NSWindow` one level below
+`kCGDesktopIconWindowLevel` *is* the wallpaper layer: it sits under the icons, ignores the
+mouse, follows you across Spaces, and stays out of Mission Control, the Dock and Cmd-Tab. The
+whole re-attach-with-backoff dance the Windows backend needs simply does not exist here
+(`docs/superpowers/plans/macos-spike-result.md`).
+
+The text is DirectWrite on one side and CoreText on the other, but the same idea on both: glyph
+outlines, measured by their *ink* rather than their line boxes, so the gap between lines is the
+gap you asked for in any font — including CJK fonts, whose ascent is sized for Hangul while a
+countdown only ever draws digits.
 
 ## Known limitations
 
 - The countdown is part of the wallpaper, so you cannot click it. Everything is driven from the
-  tray icon and the settings window.
-- Attaching to the wallpaper layer relies on undocumented Windows behaviour. It re-attaches by
-  itself when Explorer restarts, but a future Windows update could change the window structure
-  and break it.
+  tray / menu bar icon and the settings window.
+- **Windows:** attaching to the wallpaper layer relies on undocumented behaviour. It
+  re-attaches by itself when Explorer restarts, but a future Windows update could change the
+  window structure and break it.
+- **macOS:** the app is not notarized, so the first launch needs the workaround above. Sizes in
+  `config.toml` are points on macOS and physical pixels on Windows — the same number looks about
+  the same on a normal display, and stays crisp instead of doubling on a Retina one, but a
+  config shared between the two is not pixel-for-pixel identical.
+- **macOS:** per-monitor overrides are keyed on the display's UUID, and Windows keys them on its
+  own device name. A `config.toml` shared between the two applies its global settings on both;
+  only the per-monitor overrides go unmatched on the other system.
 - At the target time the countdown stops at `00:00:00`. It does not count up and does not
   notify.
 

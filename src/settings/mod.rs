@@ -30,6 +30,7 @@ pub fn run(instance_name: &str) -> Result<()> {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([720.0, 560.0])
             .with_title("DesktopCountdown 설정"),
+        event_loop_builder: activation_policy_hook(),
         ..Default::default()
     };
     eframe::run_native(
@@ -42,6 +43,37 @@ pub fn run(instance_name: &str) -> Result<()> {
     )
     .map_err(|e| anyhow::anyhow!("eframe run failed: {e}"))?;
     Ok(())
+}
+
+/// Forces the settings process to be an ordinary, front-facing app on macOS.
+///
+/// The renderer runs as an *accessory*: no Dock tile, no Cmd-Tab entry, just a menu bar
+/// item. The shipped `.app` says so in its `Info.plist` with `LSUIElement`, and both
+/// processes -- the renderer and this one -- come out of the same bundle, so both inherit it.
+///
+/// winit honours the bundle's manifest unless told otherwise, which would leave the settings
+/// window unable to come to the front: the user picks "설정 열기" from the menu, a window
+/// appears somewhere behind everything, and nothing brings it forward. Overriding the policy
+/// here is what makes the menu item do what it says. (`with_activate_ignoring_other_apps`
+/// then puts it in front of whatever the user was looking at, which is the point of having
+/// asked for it.)
+///
+/// Windows has no equivalent and needs none: the settings process there is an ordinary GUI
+/// process already.
+fn activation_policy_hook() -> Option<eframe::EventLoopBuilderHook> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(Box::new(|builder| {
+            use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+            builder
+                .with_activation_policy(ActivationPolicy::Regular)
+                .with_activate_ignoring_other_apps(true);
+        }))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
 }
 
 /// English family names that resolve their Korean/Japanese/simplified-Chinese
