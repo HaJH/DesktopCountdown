@@ -36,29 +36,15 @@ with Windows. There is nothing to install and no console window; look for the tr
 
 ### macOS 11+
 
-Grab `DesktopCountdown-macos-universal.zip` (Apple silicon and Intel in one binary), unzip it,
-and move `DesktopCountdown.app` to `/Applications`. Look for the icon in the menu bar — if the
-bar is crowded, macOS may push it off the end, so make room before deciding it did not start.
+Grab `DesktopCountdown-macos-universal.zip` (universal binary: Apple silicon and Intel), unzip
+it, and move `DesktopCountdown.app` to `/Applications`. The app lives in the menu bar.
 
-**The app is not notarized, so macOS will refuse to open it the first time.** Notarization costs
-$99 a year, which is not worth it for this. Two ways past it:
-
-The fast way — strip the quarantine flag the browser attached, then open it normally:
+The app is not notarized, so macOS blocks the first launch. Allow it under **System Settings →
+Privacy & Security → Open Anyway**, or clear the quarantine flag instead:
 
 ```sh
 xattr -dr com.apple.quarantine /Applications/DesktopCountdown.app
 ```
-
-Or download it with `curl`, which never attaches the flag in the first place, and it just opens:
-
-```sh
-curl -L -o dc.zip https://github.com/HaJH/DesktopCountdown/releases/latest/download/DesktopCountdown-macos-universal.zip
-```
-
-The GUI way — double-click the app, let it be blocked, then go to **System Settings → Privacy &
-Security**, scroll to the bottom, and click **Open Anyway** next to the message about
-DesktopCountdown. (Control-clicking the app and choosing Open used to work; macOS 15 removed that
-shortcut.)
 
 ### From source
 
