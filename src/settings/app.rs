@@ -358,6 +358,10 @@ impl SettingsApp {
                 .on_hover_text("Throw away the changes and go back to the preset")
                 .clicked()
             {
+                // Reset means "go back to the preset I was on", so cancel any held-back
+                // preset pick to prevent the discard prompt's apply-and-move-on arm from
+                // landing on the picked preset instead.
+                self.pending_preset = None;
                 if let Some(i) = base {
                     self.library.apply(i, &mut self.cfg);
                     self.mark_dirty();
