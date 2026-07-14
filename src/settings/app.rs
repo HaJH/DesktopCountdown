@@ -1411,6 +1411,97 @@ mod tests {
             "flush must write even if the throttle interval has not elapsed"
         );
     }
+
+    /// The regression this guards: a settings window that loads `presets.toml`, drops
+    /// entries it cannot use, and then rewrites the file from the survivors alone would
+    /// silently destroy those entries on the very first Save-as or Delete. `persist_presets`
+    /// is supposed to write `library.user()` followed by `library.dropped()` -- this drives
+    /// the *real* method (not a hand-rolled stand-in for it) end to end: file on disk ->
+    /// `presets_io::load` -> `Library::new` + `add_dropped` (exactly as `SettingsApp::new`
+    /// builds it) -> `persist_presets` -> file on disk again.
+    #[test]
+    fn persist_presets_keeps_dropped_presets_in_the_file() {
+        let cfg_path = tmp_path("persist-dropped");
+        let presets_path = cfg_path.with_file_name("presets.toml");
+
+        // Fails `config::validate`: dropped by `presets_io::load` into `Loaded::dropped`.
+        let invalid = presets::Preset {
+            name: "Bad".to_string(),
+            style: Style {
+                opacity: 3.0,
+                ..Style::default()
+            },
+            lines: vec![Line::default()],
+        };
+        // Name collides with the "D-Day" built-in: dropped by `Library::new` into its own
+        // `dropped` list. Marked with a distinctive line so it can be told apart from the
+        // built-in of the same name below.
+        let colliding = presets::Preset {
+            name: "D-Day".to_string(),
+            style: Style::default(),
+            lines: vec![Line {
+                text: "shadowed".to_string(),
+                ..Line::default()
+            }],
+        };
+        // An ordinary preset the library can use.
+        let good = presets::Preset {
+            name: "Good".to_string(),
+            style: Style::default(),
+            lines: vec![Line::default()],
+        };
+        presets_io::save(
+            &presets_path,
+            &[invalid.clone(), colliding.clone(), good.clone()],
+        )
+        .unwrap();
+
+        // Build the library exactly the way `SettingsApp::new` does.
+        let loaded = presets_io::load(&presets_path);
+        let mut library = presets::Library::new(loaded.presets);
+        library.add_dropped(loaded.dropped);
+
+        let mut app = SettingsApp {
+            presets_path: presets_path.clone(),
+            library,
+            ..app_with(cfg_path)
+        };
+
+        app.persist_presets();
+
+        let reloaded = presets_io::load(&presets_path);
+        let mut names: Vec<&str> = reloaded
+            .presets
+            .iter()
+            .chain(reloaded.dropped.iter())
+            .map(|p| p.name.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec!["Bad", "D-Day", "Good"],
+            "all three original entries -- the usable one and the two dropped ones -- must \
+             still be present in the file after persist_presets rewrites it"
+        );
+
+        // Neither dropped preset became reachable through the picker.
+        assert_eq!(
+            app.library.all().len(),
+            presets::BUILTIN_COUNT + 1,
+            "only the usable preset was added on top of the built-ins"
+        );
+        assert!(
+            app.library.all().iter().all(|p| p.name != "Bad"),
+            "the invalid preset must not be pickable"
+        );
+        assert!(
+            app.library
+                .all()
+                .iter()
+                .all(|p| p.lines.first().map(|l| l.text.as_str()) != Some("shadowed")),
+            "the name-colliding preset must not be pickable, even under the built-in's name"
+        );
+    }
 }
 
 #[cfg(test)]
