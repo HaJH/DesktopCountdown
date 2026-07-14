@@ -630,6 +630,7 @@ impl SettingsApp {
 
         let eff = self.effective();
         let b = self.preview_breakdown();
+        let d = self.preview_daily();
 
         egui::Frame::NONE
             .fill(egui::Color32::from_rgb(24, 24, 24))
@@ -637,7 +638,7 @@ impl SettingsApp {
             .show(ui, |ui| {
                 ui.set_min_width(180.0);
                 for l in &eff.lines {
-                    let text = crate::tokens::render(&l.text, &b);
+                    let text = crate::tokens::render(&l.text, &b, &d);
                     if text.is_empty() {
                         continue;
                     }
@@ -699,6 +700,12 @@ impl SettingsApp {
             Ok(target) => crate::countdown::breakdown(&now, &target),
             Err(_) => crate::countdown::breakdown(&now, &now),
         }
+    }
+
+    /// The daily companion to `preview_breakdown`. Infallible: a clock time
+    /// on today's date always resolves.
+    fn preview_daily(&self) -> crate::countdown::DailyBreakdown {
+        crate::countdown::daily_breakdown(&jiff::Zoned::now(), self.cfg.daily_target)
     }
 
     fn ui_date_fields(&mut self, ui: &mut egui::Ui) {
@@ -771,9 +778,52 @@ impl SettingsApp {
         ui.ctx().data_mut(|d| d.insert_temp(mem_id, fields));
     }
 
+    /// The daily target's clock time. Unlike `ui_date_fields` there is no
+    /// invalid combination to hold mid-edit (every clamped h/m/s is a valid
+    /// time), so no scratch copy in temp storage is needed.
+    fn ui_daily_target(&mut self, ui: &mut egui::Ui) {
+        let t = self.cfg.daily_target;
+        let (mut hour, mut minute, mut second) = (t.hour(), t.minute(), t.second());
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label("Daily target");
+            changed |= ui
+                .add(
+                    egui::DragValue::new(&mut hour)
+                        .range(0..=23)
+                        .prefix("Hour "),
+                )
+                .changed();
+            changed |= ui
+                .add(
+                    egui::DragValue::new(&mut minute)
+                        .range(0..=59)
+                        .prefix("Min "),
+                )
+                .changed();
+            changed |= ui
+                .add(
+                    egui::DragValue::new(&mut second)
+                        .range(0..=59)
+                        .prefix("Sec "),
+                )
+                .changed();
+        });
+        if changed {
+            // DragValue's range already clamps; `new` guards the settings
+            // process against ever panicking on a widget regression.
+            if let Ok(t) = jiff::civil::Time::new(hour, minute, second, 0) {
+                self.cfg.daily_target = t;
+                self.mark_dirty();
+            }
+        }
+    }
+
     fn ui_global(&mut self, ui: &mut egui::Ui) {
         ui.heading("Target time");
         self.ui_date_fields(ui);
+        ui.add_space(6.0);
+        self.ui_daily_target(ui);
         ui.separator();
 
         ui.heading("Text");

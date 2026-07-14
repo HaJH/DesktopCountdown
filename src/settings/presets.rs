@@ -23,12 +23,12 @@ pub struct Preset {
     pub lines: Vec<Line>,
 }
 
-pub const BUILTIN_COUNT: usize = 5;
+pub const BUILTIN_COUNT: usize = 6;
 
 /// The presets that ship with the app. `Clock only` is first: it is what a fresh config holds
 /// (`config::DEFAULT_PRESET`), and the picker shows the list in this order.
 ///
-/// All five carry `Style::default()`. That makes picking one a way back to the stock look as
+/// All six carry `Style::default()`. That makes picking one a way back to the stock look as
 /// well as to a layout -- a recovery point, not a stray side effect.
 pub fn builtin() -> Vec<Preset> {
     fn preset(name: &str, lines: &[(&str, f32)]) -> Preset {
@@ -64,6 +64,10 @@ pub fn builtin() -> Vec<Preset> {
                 (MAIN_TEMPLATE, 1.0),
                 ("{daysTotal} days left", 0.25),
             ],
+        ),
+        preset(
+            "Daily countdown",
+            &[("{dailySign}{dailyHh}:{dailyMm}:{dailySs}", 1.0)],
         ),
     ]
 }
@@ -359,6 +363,35 @@ mod tests {
     #[test]
     fn builtin_count_matches_the_list() {
         assert_eq!(builtin().len(), BUILTIN_COUNT);
+    }
+
+    #[test]
+    fn builtin_list_includes_daily_countdown() {
+        assert!(builtin().iter().any(|p| p.name == "Daily countdown"));
+    }
+
+    /// Every builtin template must render with no `{` left behind -- an
+    /// unresolvable token in a shipped preset would print as a typo.
+    #[test]
+    fn builtin_templates_use_only_known_tokens() {
+        let now = jiff::civil::datetime(2026, 7, 15, 12, 0, 0, 0)
+            .to_zoned(jiff::tz::TimeZone::fixed(jiff::tz::offset(9)))
+            .unwrap();
+        let target = jiff::civil::datetime(2026, 10, 24, 9, 0, 0, 0)
+            .to_zoned(jiff::tz::TimeZone::fixed(jiff::tz::offset(9)))
+            .unwrap();
+        let b = crate::countdown::breakdown(&now, &target);
+        let d = crate::countdown::daily_breakdown(&now, jiff::civil::time(18, 0, 0, 0));
+        for p in builtin() {
+            for l in &p.lines {
+                let rendered = crate::tokens::render(&l.text, &b, &d);
+                assert!(
+                    !rendered.contains('{'),
+                    "unresolved token in preset '{}': {rendered}",
+                    p.name
+                );
+            }
+        }
     }
 
     fn lib() -> Library {
