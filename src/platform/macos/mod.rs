@@ -29,10 +29,10 @@ use anyhow::{anyhow, Result};
 use block2::RcBlock;
 use jiff::Zoned;
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::MainThreadMarker;
+use objc2::runtime::{NSObject, ProtocolObject};
+use objc2::{define_class, msg_send, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy,
+    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
     NSApplicationDidChangeScreenParametersNotification, NSEvent, NSEventModifierFlags, NSEventType,
 };
 use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol, NSPoint, NSTimer};
@@ -193,11 +193,72 @@ pub fn run(core: AppCore) -> Result<()> {
     // Held until `run` returns: dropping the token unregisters the observer.
     let _observer = observe_screen_changes(&lp);
 
+    let app = NSApplication::sharedApplication(mtm);
+    // `delegate` is a weak property -- AppKit does not retain it -- so this must outlive
+    // the run loop that calls into it.
+    let delegate = AppDelegate::new(mtm);
+    app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+
     schedule_tick(&lp);
-    NSApplication::sharedApplication(mtm).run();
+    app.run();
+
+    // AppKit must not be left with a dangling delegate pointer once `delegate` drops.
+    app.setDelegate(None);
 
     LOOP.with(|l| *l.borrow_mut() = None);
     Ok(())
+}
+
+define_class!(
+    /// Exists for one method: the reopen event.
+    ///
+    /// SAFETY:
+    /// - `NSObject` has no subclassing requirements.
+    /// - `AppDelegate` holds no ivars and does not implement `Drop`.
+    /// - `MainThreadOnly`, as an app delegate must be: AppKit only ever calls it on the
+    ///   main thread, which is where `LOOP` and everything under it lives.
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "DCAppDelegate"]
+    struct AppDelegate;
+
+    unsafe impl NSObjectProtocol for AppDelegate {}
+
+    unsafe impl NSApplicationDelegate for AppDelegate {
+        /// Launching an app that is already running does not start a second process on
+        /// macOS: LaunchServices activates the running one and sends it this. So the
+        /// "launch it again to get the settings window" path in `main` -- which is a
+        /// second process finding the single-instance lock taken -- is never reached from
+        /// Finder or the Dock, and before this existed the app simply did nothing.
+        ///
+        /// `false` tells AppKit not to run its own default handling (unhiding windows,
+        /// or making a new one). We have no windows to unhide: the countdown lives on the
+        /// wallpaper layer and the settings window is a separate process.
+        #[unsafe(method(applicationShouldHandleReopen:hasVisibleWindows:))]
+        fn should_handle_reopen(
+            &self,
+            _sender: &NSApplication,
+            _has_visible_windows: bool,
+        ) -> bool {
+            tracing::info!("reopened; opening the settings window");
+            if let Some(lp) = LOOP.with(|l| l.borrow().clone()) {
+                // `guarded` for the same reason the timer blocks use it: a panic unwinding
+                // from here would cross back into Objective-C, which is undefined behaviour.
+                lp.guarded("reopen", |core| {
+                    core.open_settings();
+                    false
+                });
+            }
+            false
+        }
+    }
+);
+
+impl AppDelegate {
+    fn new(mtm: MainThreadMarker) -> Retained<Self> {
+        // SAFETY: `NSObject`'s designated initialiser, and the class has no ivars to set up.
+        unsafe { msg_send![Self::alloc(mtm), init] }
+    }
 }
 
 fn observe_screen_changes(lp: &Rc<EventLoop>) -> Retained<ProtocolObject<dyn NSObjectProtocol>> {

@@ -114,11 +114,28 @@ impl AppCore {
         self.warned = on;
     }
 
+    /// A settings window the user closed themselves is not ours to kill any more, and on
+    /// Unix it stays a zombie until someone reaps it.
+    fn reap_settings(&mut self) {
+        if let Some(child) = &mut self.settings {
+            if !matches!(child.try_wait(), Ok(None)) {
+                self.settings = None;
+            }
+        }
+    }
+
     /// Opens the settings window, keeping the handle so `close_settings` can take it down
     /// again. Spawning a second one while the first is up is harmless -- it exits at once on
     /// the settings single-instance lock -- but the handle we would store for it would be a
     /// process that is already gone, so don't.
-    fn open_settings(&mut self) {
+    ///
+    /// Reaps first rather than trusting the last `tick` to have done it: a window the user
+    /// closed a moment ago still has a live `Child` here until something calls `try_wait`,
+    /// and refusing to reopen for up to a tick afterwards looks exactly like the app
+    /// ignoring the request. The macOS reopen handler calls this straight out of an AppKit
+    /// event, so that window is wide open.
+    pub fn open_settings(&mut self) {
+        self.reap_settings();
         if self.settings.is_some() {
             return;
         }
@@ -164,13 +181,7 @@ impl AppCore {
     /// Runs once a second: drains the tray, makes sure the surfaces are attached, and
     /// redraws only when the countdown text changed.
     pub fn tick(&mut self) -> Result<()> {
-        // A settings window the user closed themselves is not ours to kill any more, and on
-        // Unix it stays a zombie until someone reaps it.
-        if let Some(child) = &mut self.settings {
-            if !matches!(child.try_wait(), Ok(None)) {
-                self.settings = None;
-            }
-        }
+        self.reap_settings();
 
         match self.tray.poll() {
             Some(TrayCommand::Quit) => {
