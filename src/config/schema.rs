@@ -271,11 +271,22 @@ fn d_target() -> DateTime {
     jiff::civil::datetime(2026, 12, 31, 23, 59, 59, 0)
 }
 
+fn d_daily_target() -> jiff::civil::Time {
+    jiff::civil::time(18, 0, 0, 0)
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default = "d_target")]
     pub target: DateTime,
+    /// The clock time the daily tokens count to (`{dailyHh}` and friends --
+    /// see `crate::tokens`). Unlike `target` this recurs: every day counts
+    /// down to it anew, counts up past it, and resets at midnight.
+    ///
+    /// Must stay above `[style]`: TOML rejects a scalar written after a table.
+    #[serde(default = "d_daily_target")]
+    pub daily_target: jiff::civil::Time,
     /// Which preset the current lines and style came from. Written and read only by the
     /// settings window -- the renderer draws from the fully-resolved `[[line]]` and
     /// `[style]` below and never looks at this. A name that no longer exists (the preset
@@ -304,6 +315,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             target: d_target(),
+            daily_target: d_daily_target(),
             preset: Some(DEFAULT_PRESET.to_string()),
             style: Style::default(),
             layout: Layout::default(),
@@ -889,5 +901,30 @@ letter_spacing_em = nan
         )
         .unwrap();
         assert!(matches!(validate(&cfg), Err(ConfigError::LetterSpacing(_))));
+    }
+
+    #[test]
+    fn daily_target_defaults_to_six_pm() {
+        let cfg: Config = toml::from_str(MINIMAL).unwrap();
+        assert_eq!(cfg.daily_target, jiff::civil::time(18, 0, 0, 0));
+    }
+
+    #[test]
+    fn daily_target_parses_from_a_clock_time_string() {
+        let cfg: Config =
+            toml::from_str("target = \"2026-10-24T09:00:00\"\ndaily_target = \"07:30:00\"\n")
+                .unwrap();
+        assert_eq!(cfg.daily_target, jiff::civil::time(7, 30, 0, 0));
+    }
+
+    /// Always serialized (no skip): a user reading their config.toml should
+    /// discover the key exists.
+    #[test]
+    fn daily_target_is_always_written_back() {
+        let text = toml::to_string_pretty(&Config::default()).unwrap();
+        assert!(
+            text.contains("daily_target = \"18:00:00\""),
+            "missing daily_target in:\n{text}"
+        );
     }
 }
