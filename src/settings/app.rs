@@ -370,6 +370,15 @@ impl SettingsApp {
                         self.cfg.preset = None;
                         self.persist_presets();
                         self.mark_dirty();
+                        // Deleting shifts every later index down by one. A pending pick or a
+                        // save-as box's `then_apply` held across frames may name one of those
+                        // shifted slots -- applying it now would silently land on the wrong
+                        // preset, or, if the deleted preset was the last one, index past the
+                        // end. Drop them; the user can always pick again.
+                        self.pending_preset = None;
+                        if let Some(state) = &mut self.save_as {
+                            state.then_apply = None;
+                        }
                     }
                 }
             }
