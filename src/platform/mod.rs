@@ -54,8 +54,13 @@ mod windows;
 #[cfg(windows)]
 pub use windows::*;
 
-#[cfg(not(windows))]
-compile_error!("no platform backend for this target yet (Windows only; macOS is in progress)");
+#[cfg(target_os = "macos")]
+mod macos;
+#[cfg(target_os = "macos")]
+pub use macos::*;
+
+#[cfg(not(any(windows, target_os = "macos")))]
+compile_error!("DesktopCountdown has a backend for Windows and macOS only");
 
 /// One monitor, as both backends describe it.
 ///

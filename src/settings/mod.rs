@@ -45,14 +45,25 @@ pub fn run(instance_name: &str) -> Result<()> {
 }
 
 /// English family names that resolve their Korean/Japanese/simplified-Chinese
-/// counterparts via DirectWrite (`fonts::font_file`), tried in this order. Preferred
-/// over the CJK names themselves (e.g. "맑은 고딕") since those are non-Latin and
-/// therefore a fragile literal match against however the OS happens to report them;
-/// the English names are stable across locales.
+/// counterparts via `platform::fonts::font_file`, tried in this order. Preferred over the
+/// CJK names themselves (e.g. "맑은 고딕") since those are non-Latin and therefore a
+/// fragile literal match against however the OS happens to report them; the English names
+/// are stable across locales.
+///
+/// The two systems ship different fonts, so the list is per-platform -- but what it is
+/// *for* is not: whatever the user types into the font picker's search box has to render.
+#[cfg(windows)]
 const CJK_FALLBACK_FAMILIES: [(&str, &str); 3] = [
     ("cjk_ko", "Malgun Gothic"),
     ("cjk_ja", "MS Gothic"),
     ("cjk_zh", "Microsoft YaHei"),
+];
+
+#[cfg(target_os = "macos")]
+const CJK_FALLBACK_FAMILIES: [(&str, &str); 3] = [
+    ("cjk_ko", "Apple SD Gothic Neo"),
+    ("cjk_ja", "Hiragino Sans"),
+    ("cjk_zh", "PingFang SC"),
 ];
 
 /// Installs Korean/Japanese/Chinese fonts as LOW-priority fallbacks for all UI text.
@@ -108,10 +119,15 @@ fn install_cjk_fallback(ctx: &eframe::egui::Context) {
 mod tests {
     #[test]
     fn at_least_one_cjk_fallback_font_resolves() {
-        // On Windows, at least Malgun Gothic should resolve for the CJK fallback.
-        let any = ["Malgun Gothic", "MS Gothic", "Microsoft YaHei"]
+        // Against the real list, not a copy of it: the point is that whatever this
+        // platform's list names is actually installed on this platform.
+        let any = super::CJK_FALLBACK_FAMILIES
             .iter()
-            .any(|n| crate::platform::fonts::font_file(n).is_some());
-        assert!(any, "no CJK fallback font resolved");
+            .any(|(_, family)| crate::platform::fonts::font_file(family).is_some());
+        assert!(
+            any,
+            "none of {:?} resolved; the CJK fallback list is wrong for this platform",
+            super::CJK_FALLBACK_FAMILIES.map(|(_, f)| f)
+        );
     }
 }

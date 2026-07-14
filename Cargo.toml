@@ -71,5 +71,38 @@ lto = true
 codegen-units = 1
 strip = true
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# objc2 throughout. The legacy `cocoa` / `core-graphics` / `core-text` (servo) crates
+# define their own CGContext/CGImage types, which do not interoperate with the ones
+# objc2-app-kit hands back -- mixing the two families does not type-check.
+objc2 = "0.6"
+objc2-core-foundation = { version = "0.3", features = [
+    "CFBase",
+    "CFArray",
+    "CFAttributedString",
+    "CFCGTypes",
+    "CFDictionary",
+    "CFNumber",
+    "CFString",
+] }
+objc2-core-graphics = { version = "0.3", features = [
+    "CGAffineTransform",
+    "CGBitmapContext",
+    "CGColor",
+    "CGColorSpace",
+    "CGContext",
+    "CGImage",
+    "CGPath",
+] }
+objc2-core-text = { version = "0.3", features = [
+    "CTFont",
+    "CTFontDescriptor",
+    "CTFontManager",
+    "CTFontTraits",
+    "CTLine",
+    "CTRun",
+    "CTStringAttributes",
+] }
+
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1.31"
