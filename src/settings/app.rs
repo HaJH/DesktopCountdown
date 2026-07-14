@@ -229,6 +229,22 @@ impl SettingsApp {
         self.library
             .resolve(self.cfg.preset.as_deref(), &self.cfg.lines, &self.cfg.style)
     }
+
+    /// Drops any preset index held across a library mutation that reorders or removes entries.
+    ///
+    /// `Library::delete` shifts every later index down by one, so an index captured before the
+    /// delete (a pending combo pick, or a Save-as box's `then_apply`) points at the wrong
+    /// preset afterwards -- or, if the deleted preset was the last one, past the end of the
+    /// list. `Library::apply` is defensively bounds-checked against that (see its doc comment),
+    /// but the right fix is to never carry a stale index into the next frame at all. The
+    /// Save-as box itself, and the name typed into it, are left alone: only the "apply this
+    /// after saving" pick is cleared.
+    pub(crate) fn forget_pending(&mut self) {
+        self.pending_preset = None;
+        if let Some(state) = &mut self.save_as {
+            state.then_apply = None;
+        }
+    }
 }
 
 /// Key for the scratch copy of the six target-date fields kept in egui's per-`Context`
@@ -370,15 +386,7 @@ impl SettingsApp {
                         self.cfg.preset = None;
                         self.persist_presets();
                         self.mark_dirty();
-                        // Deleting shifts every later index down by one. A pending pick or a
-                        // save-as box's `then_apply` held across frames may name one of those
-                        // shifted slots -- applying it now would silently land on the wrong
-                        // preset, or, if the deleted preset was the last one, index past the
-                        // end. Drop them; the user can always pick again.
-                        self.pending_preset = None;
-                        if let Some(state) = &mut self.save_as {
-                            state.then_apply = None;
-                        }
+                        self.forget_pending();
                     }
                 }
             }
@@ -405,12 +413,16 @@ impl SettingsApp {
             return;
         };
         let from = match self.active() {
-            presets::Active::Clean(i) | presets::Active::Modified(i) => {
-                self.library.all()[i].name.clone()
-            }
-            // The edits stopped being edits while the prompt was up (the user undid them by
-            // hand). Nothing to discard -- apply and move on.
-            presets::Active::Custom => {
+            presets::Active::Modified(i) => self.library.all()[i].name.clone(),
+            // `pending_preset` is only ever set while the look is `Modified(base)` (see the
+            // combo handler below), so `cfg.preset` still names a live preset at that point.
+            // Reaching `Clean` here means the edits stopped being edits while the prompt was
+            // up -- the user undid them by hand, back onto the very label the prompt names --
+            // so there is nothing left to discard. `Custom` is unreachable for the same
+            // reason `Modified` is guaranteed above: nothing but Delete nulls `cfg.preset`,
+            // and Delete clears `pending_preset` in the same step (`forget_pending`). Both
+            // cases: apply and move on rather than asking about edits that no longer exist.
+            presets::Active::Clean(_) | presets::Active::Custom => {
                 self.library.apply(pending, &mut self.cfg);
                 self.pending_preset = None;
                 self.mark_dirty();
@@ -1411,5 +1423,42 @@ mod preset_bar_tests {
         let a = app(cfg);
         let i = a.library.find("Clock only").expect("Clock only");
         assert_eq!(a.active(), presets::Active::Modified(i));
+    }
+
+    /// This is the invariant Finding 2's defence-in-depth exists behind: `Library::delete`
+    /// shifts every later index down, so a pending combo pick or a Save-as box's `then_apply`
+    /// captured before the delete must not survive it. Proven at the unit level here rather
+    /// than only inline in the Delete button's closure.
+    #[test]
+    fn deleting_a_preset_forgets_the_pending_pick_and_the_save_as_carry() {
+        let mut a = app(Config::default());
+        a.library = presets::Library::new(vec![presets::Preset {
+            name: "Mine".to_string(),
+            style: Style::default(),
+            lines: vec![Line::default()],
+        }]);
+        let i = presets::BUILTIN_COUNT; // "Mine", the only user preset
+        a.pending_preset = Some(i);
+        a.save_as = Some(SaveAs {
+            name: "Draft".to_string(),
+            then_apply: Some(i),
+        });
+
+        assert!(a.library.delete(i), "deleting a user preset must succeed");
+        a.forget_pending();
+
+        assert_eq!(
+            a.pending_preset, None,
+            "a pending pick captured before the delete must not survive it"
+        );
+        let save_as = a.save_as.as_ref().expect("the box itself stays open");
+        assert_eq!(
+            save_as.then_apply, None,
+            "a then_apply carry captured before the delete must not survive it"
+        );
+        assert_eq!(
+            save_as.name, "Draft",
+            "the typed name is untouched by forget_pending"
+        );
     }
 }

@@ -184,8 +184,17 @@ impl Library {
     /// Drops the preset's whole look onto the config and moves the label to it. Everything the
     /// user had layered on top is gone -- the caller is what guards that (see the settings
     /// window's discard prompt).
+    ///
+    /// Bounds-checked: `i` is an index handed out by `Active`/`resolve` or held in
+    /// `pending_preset`/`SaveAs::then_apply`, and those can outlive a mutation of the library
+    /// (e.g. `delete`, which shifts every later index down). An out-of-range index is ignored
+    /// rather than indexed unchecked -- this is a GUI process, and a stale index should never
+    /// be able to panic it.
     pub fn apply(&self, i: usize, cfg: &mut Config) {
-        let p = &self.all[i];
+        let Some(p) = self.all.get(i) else {
+            tracing::warn!("ignoring apply of stale preset index {i}: out of range");
+            return;
+        };
         cfg.lines = p.lines.clone();
         cfg.style = p.style.clone();
         cfg.preset = Some(p.name.clone());
@@ -452,6 +461,17 @@ mod tests {
             l.resolve(cfg.preset.as_deref(), &cfg.lines, &cfg.style),
             Active::Clean(i)
         );
+    }
+
+    /// The whole no-panic guarantee for a stale `pending_preset`/`Active` index rests on this:
+    /// `apply` must leave the config untouched rather than index unchecked.
+    #[test]
+    fn apply_with_an_out_of_range_index_leaves_the_config_untouched() {
+        let l = lib();
+        let mut cfg = crate::config::Config::default();
+        let before = cfg.clone();
+        l.apply(999, &mut cfg);
+        assert_eq!(cfg, before, "an out-of-range index must not touch cfg");
     }
 
     #[test]
