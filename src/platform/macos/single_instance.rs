@@ -60,9 +60,19 @@ fn lock_path(name: &str) -> Result<PathBuf> {
 mod tests {
     use super::*;
 
-    /// A name of this test's own, so a `DesktopCountdown.app` already running on the
-    /// developer's machine (holding the production lock) does not fail the test.
+    /// Names of the tests' own, so a `DesktopCountdown.app` already running on the
+    /// developer's machine (holding the production lock) does not fail them.
     const TEST_NAME: &str = "DesktopCountdown-Test-SingleInstance";
+
+    /// The lock file lives in the real config directory, which is the user's -- so a test
+    /// that leaves one behind litters the machine of everyone who ever runs `cargo test`.
+    /// Sweeping up in the test itself is safe: the lock is held by an open descriptor, not
+    /// by the directory entry, so unlinking it does not release anything.
+    fn sweep(name: &str) {
+        if let Ok(p) = lock_path(name) {
+            let _ = std::fs::remove_file(p);
+        }
+    }
 
     #[test]
     fn second_acquire_fails_while_the_first_is_held() {
@@ -76,6 +86,7 @@ mod tests {
             SingleInstance::acquire(TEST_NAME).is_ok(),
             "the lock was not released when the guard was dropped"
         );
+        sweep(TEST_NAME);
     }
 
     /// What the name parameter is for: the renderer's lock must not block the settings
@@ -84,5 +95,7 @@ mod tests {
     fn different_names_do_not_contend() {
         let _renderer = SingleInstance::acquire("DesktopCountdown-Test-A").unwrap();
         assert!(SingleInstance::acquire("DesktopCountdown-Test-B").is_ok());
+        sweep("DesktopCountdown-Test-A");
+        sweep("DesktopCountdown-Test-B");
     }
 }
