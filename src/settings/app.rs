@@ -828,37 +828,12 @@ enum LineAction {
     Remove,
 }
 
-/// The line-list editor: a preset picker, the token reference, and one row per line. Shared by
-/// the global list and a monitor override's list (`salt` keeps their widget ids apart).
+/// The line-list editor: the token reference and one row per line. Shared by the global list
+/// and a monitor override's list (`salt` keeps their widget ids apart). The preset bar is not
+/// here -- it is global-only, and `SettingsApp::ui_preset_bar` draws it.
 /// Returns whether anything changed this frame.
 fn lines_editor(ui: &mut egui::Ui, list: &mut Vec<Line>, salt: &str) -> bool {
     let mut changed = false;
-
-    // Applying a preset replaces the whole list, and this window saves on change with no undo,
-    // so picking one in the combo must not be enough -- the user has to press Apply. The
-    // pending choice lives in egui's temp store, not in `SettingsApp`: it is UI scratch state,
-    // not config.
-    let preset_id = egui::Id::new(("dc_preset", salt));
-    let mut chosen: usize = ui.ctx().data(|d| d.get_temp(preset_id)).unwrap_or(0);
-    ui.horizontal(|ui| {
-        ui.label("Preset:");
-        egui::ComboBox::from_id_salt(("dc_preset_combo", salt))
-            .selected_text(lines::PRESETS[chosen].name)
-            .show_ui(ui, |ui| {
-                for (i, p) in lines::PRESETS.iter().enumerate() {
-                    ui.selectable_value(&mut chosen, i, p.name);
-                }
-            });
-        if ui
-            .button("Apply")
-            .on_hover_text("Replaces every line below")
-            .clicked()
-        {
-            *list = lines::PRESETS[chosen].build();
-            changed = true;
-        }
-    });
-    ui.ctx().data_mut(|d| d.insert_temp(preset_id, chosen));
 
     egui::CollapsingHeader::new("Available tokens")
         .id_salt(("dc_tokens", salt))
