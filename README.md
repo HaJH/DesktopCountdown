@@ -128,9 +128,16 @@ Available tokens:
 An unknown token is printed as-is, so a typo shows on the wallpaper instead of vanishing
 silently.
 
-The settings window ships presets — Classic, Clock only, D-Day, Days left, Caption + Clock —
-that fill the whole list in one click. The default is Classic: `{months}m {weeks}w {days}d`
-above `{hh}:{mm}:{ss}`.
+The settings window ships presets — Clock only, Summary + Clock, D-Day, Days left,
+Caption + Clock — that replace the whole look, lines and style together, in one click. A fresh
+config starts on Clock only: `{hh}:{mm}:{ss}` on its own.
+
+Picking a preset applies it straight away. Editing on top of it does not touch the preset — the
+picker just marks the look as changed (`Clock only *`), and `Reset` puts it back. `Save as…`
+stores the current lines and style under a name of your own, so switching presets never costs
+you a look you cared to keep; a preset you saved can be deleted again, which drops the name and
+leaves the wallpaper as it is. Your own presets live in `presets.toml`, next to `config.toml` —
+the renderer does not watch that file, so saving one does not make the countdown redraw.
 
 ### Per-monitor overrides
 
