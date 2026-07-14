@@ -778,9 +778,48 @@ impl SettingsApp {
         ui.ctx().data_mut(|d| d.insert_temp(mem_id, fields));
     }
 
+    /// The daily target's clock time. Unlike `ui_date_fields` there is no
+    /// invalid combination to hold mid-edit (every clamped h/m/s is a valid
+    /// time), so no scratch copy in temp storage is needed.
+    fn ui_daily_target(&mut self, ui: &mut egui::Ui) {
+        let t = self.cfg.daily_target;
+        let (mut hour, mut minute, mut second) = (t.hour(), t.minute(), t.second());
+        let mut changed = false;
+        ui.horizontal(|ui| {
+            ui.label("Daily target");
+            changed |= ui
+                .add(
+                    egui::DragValue::new(&mut hour)
+                        .range(0..=23)
+                        .prefix("Hour "),
+                )
+                .changed();
+            changed |= ui
+                .add(
+                    egui::DragValue::new(&mut minute)
+                        .range(0..=59)
+                        .prefix("Min "),
+                )
+                .changed();
+            changed |= ui
+                .add(
+                    egui::DragValue::new(&mut second)
+                        .range(0..=59)
+                        .prefix("Sec "),
+                )
+                .changed();
+        });
+        if changed {
+            self.cfg.daily_target = jiff::civil::time(hour, minute, second, 0);
+            self.mark_dirty();
+        }
+    }
+
     fn ui_global(&mut self, ui: &mut egui::Ui) {
         ui.heading("Target time");
         self.ui_date_fields(ui);
+        ui.add_space(6.0);
+        self.ui_daily_target(ui);
         ui.separator();
 
         ui.heading("Text");
