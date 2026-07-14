@@ -6,48 +6,19 @@ pub mod lines;
 pub mod overrides;
 pub mod widgets;
 
-use anyhow::{bail, Result};
-use windows::core::w;
-use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, HANDLE};
-use windows::Win32::System::Threading::CreateMutexW;
+use anyhow::Result;
 
+use crate::platform::SingleInstance;
 use app::SettingsApp;
-
-/// Named-mutex single instance guard for the settings window, scoped to a
-/// different name from the renderer's `single_instance::SingleInstance` (`Local\
-/// DesktopCountdown`) so the two processes never contend with each other. Mirrors
-/// `crate::single_instance::SingleInstance`'s structure exactly; kept local here
-/// (rather than generalizing the shared module to take a name) since only this
-/// module needs a second mutex.
-struct SettingsInstance(HANDLE);
-
-impl SettingsInstance {
-    /// Returns `Err` if another settings window already holds the mutex.
-    fn acquire() -> Result<Self> {
-        unsafe {
-            let handle = CreateMutexW(None, true, w!("Local\\DesktopCountdown-Settings"))?;
-            if windows::Win32::Foundation::GetLastError() == ERROR_ALREADY_EXISTS {
-                let _ = CloseHandle(handle);
-                bail!("settings window already open");
-            }
-            Ok(Self(handle))
-        }
-    }
-}
-
-impl Drop for SettingsInstance {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = CloseHandle(self.0);
-        }
-    }
-}
 
 /// Opens the settings window and blocks until it is closed. Exits quietly (without
 /// opening a window) if a settings window is already running -- bringing the
 /// existing window forward is a non-goal.
-pub fn run() -> Result<()> {
-    let _instance = match SettingsInstance::acquire() {
+///
+/// `instance_name` is the renderer's lock under a different name, so the two processes
+/// never contend with each other.
+pub fn run(instance_name: &str) -> Result<()> {
+    let _instance = match SingleInstance::acquire(instance_name) {
         Ok(g) => g,
         Err(_) => {
             tracing::info!("settings window already open, exiting");
@@ -110,7 +81,7 @@ fn install_cjk_fallback(ctx: &eframe::egui::Context) {
         // `fonts::font_file` already validates the bytes with skrifa before returning
         // (see its doc comment), so a font that would panic epaint's parser never
         // reaches `font_data` below -- a missing or unparseable font is just skipped.
-        let Some(file) = crate::fonts::font_file(family_name) else {
+        let Some(file) = crate::platform::fonts::font_file(family_name) else {
             tracing::warn!("CJK fallback font '{family_name}' not found, skipping");
             continue;
         };
@@ -140,7 +111,7 @@ mod tests {
         // On Windows, at least Malgun Gothic should resolve for the CJK fallback.
         let any = ["Malgun Gothic", "MS Gothic", "Microsoft YaHei"]
             .iter()
-            .any(|n| crate::fonts::font_file(n).is_some());
+            .any(|n| crate::platform::fonts::font_file(n).is_some());
         assert!(any, "no CJK fallback font resolved");
     }
 }
