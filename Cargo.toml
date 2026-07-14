@@ -1,6 +1,6 @@
 [package]
 name = "desktop-countdown"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 rust-version = "1.92"
 description = "A countdown drawn onto the desktop wallpaper layer, under the icons. Windows and macOS."
