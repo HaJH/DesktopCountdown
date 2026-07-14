@@ -810,8 +810,12 @@ impl SettingsApp {
                 .changed();
         });
         if changed {
-            self.cfg.daily_target = jiff::civil::time(hour, minute, second, 0);
-            self.mark_dirty();
+            // DragValue's range already clamps; `new` guards the settings
+            // process against ever panicking on a widget regression.
+            if let Ok(t) = jiff::civil::Time::new(hour, minute, second, 0) {
+                self.cfg.daily_target = t;
+                self.mark_dirty();
+            }
         }
     }
 

@@ -56,6 +56,7 @@ Available tokens:
 The `daily*` tokens count to `daily_target` — a clock time, not a date. Every day counts
 down to it anew, counts up past it (put `{dailySign}` in front to show the `+`), and resets
 at midnight. `target` and `daily_target` are independent; one line can use either, or both.
+A `daily_target` of `00:00:00` never counts down: every day is entirely overtime, counting up from midnight.
 
 An unknown token is printed as-is, so a typo shows on the wallpaper instead of vanishing
 silently.
