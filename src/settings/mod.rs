@@ -6,48 +6,19 @@ pub mod lines;
 pub mod overrides;
 pub mod widgets;
 
-use anyhow::{bail, Result};
-use windows::core::w;
-use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, HANDLE};
-use windows::Win32::System::Threading::CreateMutexW;
+use anyhow::Result;
 
+use crate::platform::SingleInstance;
 use app::SettingsApp;
-
-/// Named-mutex single instance guard for the settings window, scoped to a
-/// different name from the renderer's `single_instance::SingleInstance` (`Local\
-/// DesktopCountdown`) so the two processes never contend with each other. Mirrors
-/// `crate::single_instance::SingleInstance`'s structure exactly; kept local here
-/// (rather than generalizing the shared module to take a name) since only this
-/// module needs a second mutex.
-struct SettingsInstance(HANDLE);
-
-impl SettingsInstance {
-    /// Returns `Err` if another settings window already holds the mutex.
-    fn acquire() -> Result<Self> {
-        unsafe {
-            let handle = CreateMutexW(None, true, w!("Local\\DesktopCountdown-Settings"))?;
-            if windows::Win32::Foundation::GetLastError() == ERROR_ALREADY_EXISTS {
-                let _ = CloseHandle(handle);
-                bail!("settings window already open");
-            }
-            Ok(Self(handle))
-        }
-    }
-}
-
-impl Drop for SettingsInstance {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = CloseHandle(self.0);
-        }
-    }
-}
 
 /// Opens the settings window and blocks until it is closed. Exits quietly (without
 /// opening a window) if a settings window is already running -- bringing the
 /// existing window forward is a non-goal.
-pub fn run() -> Result<()> {
-    let _instance = match SettingsInstance::acquire() {
+///
+/// `instance_name` is the renderer's lock under a different name, so the two processes
+/// never contend with each other.
+pub fn run(instance_name: &str) -> Result<()> {
+    let _instance = match SingleInstance::acquire(instance_name) {
         Ok(g) => g,
         Err(_) => {
             tracing::info!("settings window already open, exiting");
@@ -59,6 +30,7 @@ pub fn run() -> Result<()> {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_inner_size([720.0, 560.0])
             .with_title("DesktopCountdown 설정"),
+        event_loop_builder: activation_policy_hook(),
         ..Default::default()
     };
     eframe::run_native(
@@ -73,15 +45,57 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
+/// Forces the settings process to be an ordinary, front-facing app on macOS.
+///
+/// The renderer runs as an *accessory*: no Dock tile, no Cmd-Tab entry, just a menu bar
+/// item. The shipped `.app` says so in its `Info.plist` with `LSUIElement`, and both
+/// processes -- the renderer and this one -- come out of the same bundle, so both inherit it.
+///
+/// winit honours the bundle's manifest unless told otherwise, which would leave the settings
+/// window unable to come to the front: the user picks "설정 열기" from the menu, a window
+/// appears somewhere behind everything, and nothing brings it forward. Overriding the policy
+/// here is what makes the menu item do what it says. (`with_activate_ignoring_other_apps`
+/// then puts it in front of whatever the user was looking at, which is the point of having
+/// asked for it.)
+///
+/// Windows has no equivalent and needs none: the settings process there is an ordinary GUI
+/// process already.
+fn activation_policy_hook() -> Option<eframe::EventLoopBuilderHook> {
+    #[cfg(target_os = "macos")]
+    {
+        Some(Box::new(|builder| {
+            use winit::platform::macos::{ActivationPolicy, EventLoopBuilderExtMacOS};
+            builder
+                .with_activation_policy(ActivationPolicy::Regular)
+                .with_activate_ignoring_other_apps(true);
+        }))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
+    }
+}
+
 /// English family names that resolve their Korean/Japanese/simplified-Chinese
-/// counterparts via DirectWrite (`fonts::font_file`), tried in this order. Preferred
-/// over the CJK names themselves (e.g. "맑은 고딕") since those are non-Latin and
-/// therefore a fragile literal match against however the OS happens to report them;
-/// the English names are stable across locales.
+/// counterparts via `platform::fonts::font_file`, tried in this order. Preferred over the
+/// CJK names themselves (e.g. "맑은 고딕") since those are non-Latin and therefore a
+/// fragile literal match against however the OS happens to report them; the English names
+/// are stable across locales.
+///
+/// The two systems ship different fonts, so the list is per-platform -- but what it is
+/// *for* is not: whatever the user types into the font picker's search box has to render.
+#[cfg(windows)]
 const CJK_FALLBACK_FAMILIES: [(&str, &str); 3] = [
     ("cjk_ko", "Malgun Gothic"),
     ("cjk_ja", "MS Gothic"),
     ("cjk_zh", "Microsoft YaHei"),
+];
+
+#[cfg(target_os = "macos")]
+const CJK_FALLBACK_FAMILIES: [(&str, &str); 3] = [
+    ("cjk_ko", "Apple SD Gothic Neo"),
+    ("cjk_ja", "Hiragino Sans"),
+    ("cjk_zh", "PingFang SC"),
 ];
 
 /// Installs Korean/Japanese/Chinese fonts as LOW-priority fallbacks for all UI text.
@@ -110,7 +124,7 @@ fn install_cjk_fallback(ctx: &eframe::egui::Context) {
         // `fonts::font_file` already validates the bytes with skrifa before returning
         // (see its doc comment), so a font that would panic epaint's parser never
         // reaches `font_data` below -- a missing or unparseable font is just skipped.
-        let Some(file) = crate::fonts::font_file(family_name) else {
+        let Some(file) = crate::platform::fonts::font_file(family_name) else {
             tracing::warn!("CJK fallback font '{family_name}' not found, skipping");
             continue;
         };
@@ -137,10 +151,15 @@ fn install_cjk_fallback(ctx: &eframe::egui::Context) {
 mod tests {
     #[test]
     fn at_least_one_cjk_fallback_font_resolves() {
-        // On Windows, at least Malgun Gothic should resolve for the CJK fallback.
-        let any = ["Malgun Gothic", "MS Gothic", "Microsoft YaHei"]
+        // Against the real list, not a copy of it: the point is that whatever this
+        // platform's list names is actually installed on this platform.
+        let any = super::CJK_FALLBACK_FAMILIES
             .iter()
-            .any(|n| crate::fonts::font_file(n).is_some());
-        assert!(any, "no CJK fallback font resolved");
+            .any(|(_, family)| crate::platform::fonts::font_file(family).is_some());
+        assert!(
+            any,
+            "none of {:?} resolved; the CJK fallback list is wrong for this platform",
+            super::CJK_FALLBACK_FAMILIES.map(|(_, f)| f)
+        );
     }
 }

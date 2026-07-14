@@ -13,17 +13,7 @@ use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::WindowsAndMessaging::EDD_GET_DEVICE_INTERFACE_NAME;
 
 use crate::layout::Rect;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MonitorInfo {
-    /// Stable across reboots and cable swaps, e.g. `\\?\DISPLAY#DEL41A8#...`.
-    pub id: String,
-    /// Display only, e.g. `\\.\DISPLAY1 (2560x1440)`. Never used for identity.
-    pub name: String,
-    /// Virtual-desktop coordinates in physical pixels. May be negative.
-    pub rect: Rect,
-    pub dpi: u32,
-}
+use crate::platform::MonitorInfo;
 
 thread_local! {
     static SINK: RefCell<Vec<MonitorInfo>> = const { RefCell::new(Vec::new()) };
@@ -94,7 +84,11 @@ unsafe fn describe(hmon: HMONITOR) -> Option<MonitorInfo> {
         id,
         name: format!("{} ({}x{})", device, rect.w, rect.h),
         rect,
-        dpi: dpi_x,
+        // The renderer works in physical pixels at a fixed 96 DPI, so nothing on Windows
+        // reads this. It exists because macOS Retina cannot do without it (`CALayer`'s
+        // `contentsScale`), and the shared `MonitorInfo` has to carry the same fields on
+        // both platforms.
+        scale: dpi_x as f32 / 96.0,
     })
 }
 
@@ -115,11 +109,11 @@ mod tests {
     }
 
     #[test]
-    fn every_monitor_has_a_positive_size_and_dpi() {
+    fn every_monitor_has_a_positive_size_and_scale() {
         for m in enumerate().unwrap() {
             assert!(m.rect.w > 0, "{m:?}");
             assert!(m.rect.h > 0, "{m:?}");
-            assert!(m.dpi >= 96, "{m:?}");
+            assert!(m.scale >= 1.0, "{m:?}");
         }
     }
 

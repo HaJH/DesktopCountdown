@@ -44,6 +44,9 @@ pub struct Surface {
 }
 
 impl Surface {
+    /// Only the tests read this back: `draw` recreates the surface itself when the size
+    /// changes, so no caller has a reason to ask.
+    #[cfg(test)]
     pub fn size(&self) -> (u32, u32) {
         self.size
     }
@@ -254,8 +257,8 @@ impl Compositor {
 
 #[cfg(test)]
 mod tests {
+    use super::super::render::Painter;
     use super::*;
-    use crate::render::Painter;
     use windows::core::{w, PCWSTR};
     use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
     use windows::Win32::Graphics::Direct2D::Common::D2D1_COLOR_F;

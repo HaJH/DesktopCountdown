@@ -1,2 +1,6 @@
 /target
 .superpowers/
+
+# The .app bundle release.yml assembles; never checked in.
+/DesktopCountdown.app
+/DesktopCountdown-macos-universal.zip

@@ -26,3 +26,80 @@ jobs:
           --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
+
+  macos:
+    # The Windows job creates the release; this one only uploads to it. Both calling
+    # `gh release create` would race, and the loser fails the build.
+    needs: release
+    runs-on: macos-15
+    env:
+      # Must match LSMinimumSystemVersion in macos/Info.plist. Unset, the build takes the
+      # runner's SDK default -- the newest macOS there is -- and the app then refuses to
+      # launch on anything older.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+      APP: DesktopCountdown.app
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+
+      # Host architecture only. Running the x86_64 slice would need Rosetta, and what it
+      # would prove -- that the same Rust code passes -- the arm64 run already proves.
+      - run: cargo test
+
+      - name: Build both slices
+        run: |
+          cargo build --release --target aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+
+      - name: Assemble the .app bundle
+        run: |
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+
+          # `--target` puts the output under target/<triple>/release/, not target/release/.
+          lipo -create -output "$APP/Contents/MacOS/desktop-countdown" \
+            target/aarch64-apple-darwin/release/desktop-countdown \
+            target/x86_64-apple-darwin/release/desktop-countdown
+          chmod +x "$APP/Contents/MacOS/desktop-countdown"
+
+          cp macos/Info.plist "$APP/Contents/Info.plist"
+          VERSION="${GITHUB_REF_NAME#v}"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION" "$APP/Contents/Info.plist"
+          printf 'APPL????' > "$APP/Contents/PkgInfo"
+
+          ICONSET="$(mktemp -d)/AppIcon.iconset"
+          mkdir -p "$ICONSET"
+          for s in 16 32 128 256 512; do
+            sips -z $s $s assets/icon.png --out "$ICONSET/icon_${s}x${s}.png" >/dev/null
+            sips -z $((s * 2)) $((s * 2)) assets/icon.png --out "$ICONSET/icon_${s}x${s}@2x.png" >/dev/null
+          done
+          iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/AppIcon.icns"
+
+      # Not notarization, and no substitute for it -- Gatekeeper still refuses the app until
+      # the user allows it by hand (see the README). What this *is* for:
+      #
+      #   1. Apple silicon will not execute native arm64 code with no signature at all. The
+      #      linker adds one, but
+      #   2. `lipo` produces a fresh binary with no signature, so it has to be re-added; and
+      #   3. an unsigned download gets "the app is damaged, move it to the Trash" -- a dead
+      #      end -- instead of a dialog with an "Open Anyway" path behind it.
+      #
+      # PlistBuddy above must run BEFORE this: editing a plist inside a signed bundle
+      # invalidates the signature.
+      - name: Ad-hoc sign
+        run: |
+          codesign --force --deep --sign - "$APP"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+
+      # `ditto`, not `zip`: a .app is a directory, and zip does not preserve the executable
+      # bit or the resource forks reliably.
+      - name: Zip the bundle
+        run: ditto -c -k --sequesterRsrc --keepParent "$APP" DesktopCountdown-macos-universal.zip
+
+      - name: Upload to the release
+        run: gh release upload "$GITHUB_REF_NAME" DesktopCountdown-macos-universal.zip
+        env:
+          GH_TOKEN: ${{ github.token }}

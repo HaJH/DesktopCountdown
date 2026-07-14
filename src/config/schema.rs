@@ -27,8 +27,21 @@ pub enum Anchor {
     BottomRight,
 }
 
+/// A monospace face that ships with the OS, so a countdown's digits do not shuffle sideways
+/// as they tick and a fresh config renders without the user touching anything.
+///
+/// Per-platform, unlike the rest of the defaults: a `config.toml` written on one system and
+/// opened on the other keeps whatever font it names, and only a *new* file gets the local
+/// default. (A name the system does not have is not fatal either way -- the renderer falls
+/// back -- but a default that always misses would be a strange thing to ship.)
+pub const DEFAULT_FONT_FAMILY: &str = if cfg!(target_os = "macos") {
+    "Menlo"
+} else {
+    "Consolas"
+};
+
 fn d_font_family() -> String {
-    "Consolas".to_string()
+    DEFAULT_FONT_FAMILY.to_string()
 }
 fn d_font_weight() -> u16 {
     400
@@ -439,7 +452,7 @@ mod tests {
     #[test]
     fn minimal_config_fills_defaults() {
         let cfg: Config = toml::from_str(MINIMAL).unwrap();
-        assert_eq!(cfg.style.font_family, "Consolas");
+        assert_eq!(cfg.style.font_family, DEFAULT_FONT_FAMILY);
         assert_eq!(cfg.style.size_px, 64.0);
         assert_eq!(cfg.style.mode, DrawMode::Fill);
         assert_eq!(cfg.style.opacity, 0.85);

@@ -25,8 +25,15 @@ pub struct ConfigWatcher {
 
 impl ConfigWatcher {
     /// Starts watching the directory holding `path`. Every filesystem event touching the
-    /// file posts `msg` to the window last given to `notify_window`.
-    pub fn new(path: &Path, msg: u32) -> Result<Self> {
+    /// file posts `WM_CONFIG_DIRTY` to the window last given to `notify_window`.
+    pub fn new(path: &Path) -> Result<Self> {
+        Self::with_msg(path, super::WM_CONFIG_DIRTY)
+    }
+
+    /// The message to post is a parameter only so the tests can watch for one of their
+    /// own instead of racing the real `WM_CONFIG_DIRTY` against anything else on the
+    /// queue.
+    fn with_msg(path: &Path, msg: u32) -> Result<Self> {
         let target = Arc::new(AtomicIsize::new(0));
         let file_name = path.file_name().map(|s| s.to_owned());
         let post_to = Arc::clone(&target);
@@ -146,7 +153,7 @@ mod tests {
         std::fs::write(&path, "target = \"2030-01-01T00:00:00\"\n").unwrap();
 
         let hwnd = hidden_window();
-        let watcher = ConfigWatcher::new(&path, TEST_MSG).unwrap();
+        let watcher = ConfigWatcher::with_msg(&path, TEST_MSG).unwrap();
         watcher.notify_window(hwnd);
 
         std::fs::write(&path, "target = \"2031-01-01T00:00:00\"\n").unwrap();
@@ -170,7 +177,7 @@ mod tests {
         std::fs::write(&path, "target = \"2030-01-01T00:00:00\"\n").unwrap();
 
         let hwnd = hidden_window();
-        let watcher = ConfigWatcher::new(&path, TEST_MSG).unwrap();
+        let watcher = ConfigWatcher::with_msg(&path, TEST_MSG).unwrap();
         watcher.notify_window(hwnd);
 
         std::fs::write(dir.join("notes.txt"), "hello").unwrap();

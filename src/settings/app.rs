@@ -8,7 +8,7 @@ use anyhow::Result;
 use eframe::egui;
 
 use crate::config::{self, Align, Anchor, Config, DrawMode, Line, Style};
-use crate::monitors;
+use crate::platform;
 use crate::settings::{lines, overrides, widgets};
 
 /// Minimum gap between two writes of `config.toml`.
@@ -99,7 +99,7 @@ impl FontRegistry {
         if self.pending.contains(family) || self.failed.contains(family) {
             return false;
         }
-        match crate::fonts::font_file(family) {
+        match crate::platform::fonts::font_file(family) {
             Some(file) => {
                 let mut data = egui::FontData::from_owned(file.bytes);
                 data.index = file.index;
@@ -125,7 +125,7 @@ impl SettingsApp {
     pub fn new() -> Result<Self> {
         let cfg_path = crate::paths::config_path()?;
         let cfg = config::load_or_create(&cfg_path)?;
-        let monitors = monitors::enumerate()
+        let monitors = platform::enumerate_monitors()
             .unwrap_or_default()
             .into_iter()
             .map(|m| MonitorRef {
@@ -133,7 +133,7 @@ impl SettingsApp {
                 name: m.name,
             })
             .collect();
-        let fonts = crate::fonts::system_families().unwrap_or_default();
+        let fonts = crate::platform::fonts::system_families().unwrap_or_default();
         Ok(Self {
             cfg,
             target: Target::Global,

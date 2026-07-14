@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>DesktopCountdown</string>
+	<key>CFBundleDisplayName</key>
+	<string>DesktopCountdown</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.hajh.desktop-countdown</string>
+	<key>CFBundleExecutable</key>
+	<string>desktop-countdown</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+
+	<!-- release.yml rewrites this from the tag, before signing: editing a plist inside a
+	     signed bundle invalidates the signature. -->
+	<key>CFBundleShortVersionString</key>
+	<string>1.0.0</string>
+	<key>CFBundleVersion</key>
+	<string>1.0.0</string>
+
+	<!-- Must match MACOSX_DEPLOYMENT_TARGET in release.yml. Left unset, the build picks up
+	     the runner's SDK default (whatever is newest) and the app then refuses to launch on
+	     anything older, with no useful message. -->
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+
+	<!-- An accessory app: no Dock tile, no Cmd-Tab entry, just the menu bar item. The
+	     renderer wants exactly this. The settings process comes out of the same bundle and
+	     would inherit it, so it overrides the policy at runtime -- see
+	     `settings::activation_policy_hook`. -->
+	<key>LSUIElement</key>
+	<true/>
+
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>MIT</string>
+</dict>
+</plist>
