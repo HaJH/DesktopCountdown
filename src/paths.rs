@@ -15,6 +15,16 @@ pub fn config_path() -> Result<PathBuf> {
     Ok(p)
 }
 
+/// `presets.toml`, next to `config.toml`. Only the settings window touches it -- the renderer
+/// watches `config.toml` and knows nothing about presets, so saving one does not make the
+/// wallpaper redraw.
+pub fn presets_path() -> Result<PathBuf> {
+    let mut p = config_dir()?;
+    std::fs::create_dir_all(&p)?;
+    p.push("presets.toml");
+    Ok(p)
+}
+
 /// `%LOCALAPPDATA%\DesktopCountdown\`, or `~/Library/Logs/DesktopCountdown/`.
 pub fn log_dir() -> Result<PathBuf> {
     let p = log_dir_path()?;
@@ -80,5 +90,13 @@ mod tests {
         let cfg_dir = config_path().unwrap().parent().unwrap().to_path_buf();
         assert_eq!(logs.file_name().unwrap(), APP_DIR);
         assert_ne!(logs, cfg_dir);
+    }
+
+    #[test]
+    fn the_presets_file_sits_next_to_the_config() {
+        let presets = presets_path().unwrap();
+        let cfg = config_path().unwrap();
+        assert_eq!(presets.file_name().unwrap(), "presets.toml");
+        assert_eq!(presets.parent(), cfg.parent());
     }
 }

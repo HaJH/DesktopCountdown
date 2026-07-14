@@ -9,7 +9,7 @@ use eframe::egui;
 
 use crate::config::{self, Align, Anchor, Config, DrawMode, Line, Style};
 use crate::platform;
-use crate::settings::{lines, overrides, widgets};
+use crate::settings::{lines, overrides, presets, presets_io, widgets};
 
 /// Minimum gap between two writes of `config.toml`.
 ///
@@ -46,12 +46,29 @@ pub struct SettingsApp {
     /// When `config.toml` was last written, for the `SAVE_INTERVAL_MS` throttle.
     pub(crate) last_write_ms: u64,
     pub(crate) cfg_path: PathBuf,
+    pub(crate) presets_path: PathBuf,
+    /// The built-ins plus the user's own, in picker order.
+    pub(crate) library: presets::Library,
+    /// A preset the user picked while the current one had unsaved edits on it. Held back
+    /// until the discard prompt is answered; applying it straight away is exactly what would
+    /// throw those edits out without asking.
+    pub(crate) pending_preset: Option<usize>,
+    /// The open Save-as box, if any.
+    pub(crate) save_as: Option<SaveAs>,
     pub(crate) error: Option<String>,
     /// Tracks which font families are safe to render via `FontFamily::Name` (see
     /// `FontRegistry`).
     pub(crate) font_registry: FontRegistry,
     /// Filter text for the font picker's searchable list.
     pub(crate) font_search: String,
+}
+
+/// The Save-as box's state. `then_apply` is set when the box was opened from the discard
+/// prompt: once the look is safely named, the preset the user had picked is applied.
+#[derive(Debug, Default)]
+pub(crate) struct SaveAs {
+    pub name: String,
+    pub then_apply: Option<usize>,
 }
 
 /// Tracks, across frames, which font families are registered with egui for the font
@@ -125,6 +142,10 @@ impl SettingsApp {
     pub fn new() -> Result<Self> {
         let cfg_path = crate::paths::config_path()?;
         let cfg = config::load_or_create(&cfg_path)?;
+        let presets_path = crate::paths::presets_path()?;
+        let loaded = presets_io::load(&presets_path);
+        let mut library = presets::Library::new(loaded.presets);
+        library.add_dropped(loaded.dropped);
         let monitors = platform::enumerate_monitors()
             .unwrap_or_default()
             .into_iter()
@@ -142,6 +163,10 @@ impl SettingsApp {
             dirty: false,
             last_write_ms: 0,
             cfg_path,
+            presets_path,
+            library,
+            pending_preset: None,
+            save_as: None,
             error: None,
             font_registry: FontRegistry::default(),
             font_search: String::new(),
@@ -197,6 +222,29 @@ impl SettingsApp {
                 Err(e) => self.error = Some(format!("Save failed: {e}")),
             },
             Err(e) => self.error = Some(format!("Invalid config: {e}")),
+        }
+    }
+
+    /// Which preset the current look sits on. Recomputed every frame rather than stored:
+    /// every widget in this window can change what it depends on.
+    pub fn active(&self) -> presets::Active {
+        self.library
+            .resolve(self.cfg.preset.as_deref(), &self.cfg.lines, &self.cfg.style)
+    }
+
+    /// Drops any preset index held across a library mutation that reorders or removes entries.
+    ///
+    /// `Library::delete` shifts every later index down by one, so an index captured before the
+    /// delete (a pending combo pick, or a Save-as box's `then_apply`) points at the wrong
+    /// preset afterwards -- or, if the deleted preset was the last one, past the end of the
+    /// list. `Library::apply` is defensively bounds-checked against that (see its doc comment),
+    /// but the right fix is to never carry a stale index into the next frame at all. The
+    /// Save-as box itself, and the name typed into it, are left alone: only the "apply this
+    /// after saving" pick is cleared.
+    pub(crate) fn forget_pending(&mut self) {
+        self.pending_preset = None;
+        if let Some(state) = &mut self.save_as {
+            state.then_apply = None;
         }
     }
 }
@@ -268,6 +316,243 @@ impl eframe::App for SettingsApp {
 }
 
 impl SettingsApp {
+    /// The preset picker: what the current look is called, and the four things you can do to
+    /// it. Global-only -- a monitor override is a partial change on top of the global look,
+    /// which is not a thing a whole-look snapshot can express. (A monitor starts from the
+    /// current look anyway: `overrides::enable_style_override` copies it in.)
+    fn ui_preset_bar(&mut self, ui: &mut egui::Ui) {
+        let active = self.active();
+        let label = match active {
+            presets::Active::Clean(i) => self.library.all()[i].name.clone(),
+            presets::Active::Modified(i) => format!("{} *", self.library.all()[i].name),
+            presets::Active::Custom => "Custom".to_string(),
+        };
+        let base = match active {
+            presets::Active::Clean(i) | presets::Active::Modified(i) => Some(i),
+            presets::Active::Custom => None,
+        };
+        let modified = matches!(active, presets::Active::Modified(_));
+
+        let mut picked: Option<usize> = None;
+        ui.horizontal(|ui| {
+            ui.label("Preset:");
+            egui::ComboBox::from_id_salt("dc_preset_combo")
+                .width(180.0)
+                .selected_text(label.as_str())
+                .show_ui(ui, |ui| {
+                    ui.label("Built-in");
+                    for (i, p) in self.library.all().iter().enumerate() {
+                        if i == presets::BUILTIN_COUNT {
+                            ui.separator();
+                            ui.label("Saved");
+                        }
+                        if ui
+                            .selectable_label(base == Some(i), p.name.as_str())
+                            .clicked()
+                        {
+                            picked = Some(i);
+                        }
+                    }
+                });
+
+            if ui
+                .add_enabled(modified, egui::Button::new("Reset"))
+                .on_hover_text("Throw away the changes and go back to the preset")
+                .clicked()
+            {
+                // Reset means "cancel the switch, go back to the preset I was on" -- the whole
+                // carried-forward intent has to go, not just `pending_preset`. Clearing only
+                // that would leave a Save-as box's `then_apply` armed if it was opened from the
+                // discard prompt (pick a preset while Modified -> "Save as..." -> Reset): the
+                // look is clean again, but saving would still apply the preset Reset just
+                // backed away from.
+                self.forget_pending();
+                if let Some(i) = base {
+                    self.library.apply(i, &mut self.cfg);
+                    self.mark_dirty();
+                }
+            }
+
+            if ui
+                .button("Save as\u{2026}")
+                .on_hover_text("Store the current lines and style as a preset of your own")
+                .clicked()
+            {
+                self.save_as = Some(SaveAs::default());
+                self.pending_preset = None;
+            }
+
+            let deletable = base.is_some_and(|i| !self.library.is_builtin(i));
+            if ui
+                .add_enabled(deletable, egui::Button::new("Delete"))
+                .on_hover_text("Remove this preset. The lines and style on screen stay as they are")
+                .clicked()
+            {
+                if let Some(i) = base {
+                    // The look stays; only the label goes. Deleting a preset must not change
+                    // what is on the wallpaper.
+                    if self.library.delete(i) {
+                        self.cfg.preset = None;
+                        self.persist_presets();
+                        self.mark_dirty();
+                        self.forget_pending();
+                    }
+                }
+            }
+        });
+
+        if let Some(i) = picked {
+            if modified {
+                self.pending_preset = Some(i);
+            } else {
+                self.library.apply(i, &mut self.cfg);
+                self.mark_dirty();
+            }
+        }
+
+        self.ui_discard_prompt(ui);
+        self.ui_save_as(ui);
+    }
+
+    /// Shown when a preset was picked while the current one had unsaved edits. Inline, not a
+    /// modal: the window saves as you type and there is no undo stack to fall back on, so the
+    /// one place a confirmation earns its keep is the one click that throws work away.
+    fn ui_discard_prompt(&mut self, ui: &mut egui::Ui) {
+        let Some(pending) = self.pending_preset else {
+            return;
+        };
+        let from = match self.active() {
+            presets::Active::Modified(i) => self.library.all()[i].name.clone(),
+            // `pending_preset` is only ever set while the look is `Modified(base)` (see the
+            // combo handler below), so `cfg.preset` still names a live preset at that point.
+            // Reaching `Clean` here means the edits stopped being edits while the prompt was
+            // up -- the user undid them by hand, back onto the very label the prompt names --
+            // so there is nothing left to discard. `Custom` is unreachable for the same
+            // reason `Modified` is guaranteed above: nothing but Delete nulls `cfg.preset`,
+            // and Delete clears `pending_preset` in the same step (`forget_pending`). Both
+            // cases: apply and move on rather than asking about edits that no longer exist.
+            presets::Active::Clean(_) | presets::Active::Custom => {
+                self.library.apply(pending, &mut self.cfg);
+                self.pending_preset = None;
+                self.mark_dirty();
+                return;
+            }
+        };
+
+        ui.horizontal(|ui| {
+            ui.colored_label(
+                egui::Color32::from_rgb(200, 140, 40),
+                format!("\u{26a0} Discard changes to \"{from}\"?"),
+            );
+            if ui.button("Discard").clicked() {
+                self.library.apply(pending, &mut self.cfg);
+                self.pending_preset = None;
+                self.mark_dirty();
+            }
+            if ui.button("Save as\u{2026}").clicked() {
+                self.save_as = Some(SaveAs {
+                    name: String::new(),
+                    then_apply: Some(pending),
+                });
+                self.pending_preset = None;
+            }
+            if ui.button("Cancel").clicked() {
+                self.pending_preset = None;
+            }
+        });
+    }
+
+    /// The name box. Saving stores the current lines and style, moves the label onto the new
+    /// preset, and -- when the box was opened from the discard prompt -- applies the preset
+    /// the user had picked.
+    fn ui_save_as(&mut self, ui: &mut egui::Ui) {
+        let Some(mut state) = self.save_as.take() else {
+            return;
+        };
+        let status = self.library.check_name(&state.name);
+        let mut keep_open = true;
+
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut state.name)
+                    .desired_width(180.0)
+                    .hint_text("Preset name"),
+            );
+
+            let save_label = match status {
+                presets::NameStatus::Overwrite => "Overwrite",
+                _ => "Save",
+            };
+            let savable = matches!(
+                status,
+                presets::NameStatus::New | presets::NameStatus::Overwrite
+            );
+            if ui
+                .add_enabled(savable, egui::Button::new(save_label))
+                .clicked()
+            {
+                // `status` (and the `savable` it gates the button on) was computed before the
+                // `TextEdit` above could mutate `state.name` this frame, so it can be one
+                // keystroke stale -- a click landing in the same frame as an edit that changes
+                // what `check_name` would say. Re-check against the name as typed rather than
+                // trust the button having been enabled: saving under a built-in's name would
+                // hand `Library::save_as` a name `check_name` was supposed to have blocked,
+                // and `Library::new` would only drop it again on the next launch.
+                let fresh = self.library.check_name(&state.name);
+                if matches!(
+                    fresh,
+                    presets::NameStatus::New | presets::NameStatus::Overwrite
+                ) {
+                    let lines = self.cfg.lines.clone();
+                    let style = self.cfg.style.clone();
+                    let i = self.library.save_as(&state.name, &lines, &style);
+                    self.cfg.preset = Some(self.library.all()[i].name.clone());
+                    self.persist_presets();
+                    if let Some(next) = state.then_apply {
+                        self.library.apply(next, &mut self.cfg);
+                    }
+                    self.mark_dirty();
+                    keep_open = false;
+                }
+            }
+            if ui.button("Cancel").clicked() {
+                keep_open = false;
+            }
+
+            match status {
+                presets::NameStatus::Builtin => {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 50, 50),
+                        "That is a built-in preset's name",
+                    );
+                }
+                presets::NameStatus::Overwrite => {
+                    ui.small("Replaces the preset of that name");
+                }
+                presets::NameStatus::Empty | presets::NameStatus::New => {}
+            }
+        });
+
+        if keep_open {
+            self.save_as = Some(state);
+        }
+    }
+
+    /// Writes the user's presets to `presets.toml`: the ones the picker can use, followed by
+    /// the ones the library could not (`Library::dropped`) -- a name collision, or a value that
+    /// failed `config::validate` on load. Writing only `user()` would let the very next rewrite
+    /// erase a hand-edited preset the settings window merely could not make sense of; appending
+    /// `dropped()` is what keeps that data alive instead. Failure is shown in the error banner
+    /// and otherwise ignored: the library in memory is still right, and nothing on the
+    /// wallpaper depends on this file.
+    fn persist_presets(&mut self) {
+        let mut to_save = self.library.user().to_vec();
+        to_save.extend(self.library.dropped().iter().cloned());
+        if let Err(e) = presets_io::save(&self.presets_path, &to_save) {
+            self.error = Some(format!("Could not save presets: {e}"));
+        }
+    }
+
     fn ui_target_selector(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("Editing:");
@@ -458,6 +743,8 @@ impl SettingsApp {
         ui.separator();
 
         ui.heading("Lines");
+        self.ui_preset_bar(ui);
+        ui.add_space(4.0);
         // Lent out and put back: `lines_editor` needs `&mut Vec<Line>` while `self` is still
         // borrowed by `ui`'s closure-free call chain here.
         let mut list = std::mem::take(&mut self.cfg.lines);
@@ -828,37 +1115,12 @@ enum LineAction {
     Remove,
 }
 
-/// The line-list editor: a preset picker, the token reference, and one row per line. Shared by
-/// the global list and a monitor override's list (`salt` keeps their widget ids apart).
+/// The line-list editor: the token reference and one row per line. Shared by the global list
+/// and a monitor override's list (`salt` keeps their widget ids apart). The preset bar is not
+/// here -- it is global-only, and `SettingsApp::ui_preset_bar` draws it.
 /// Returns whether anything changed this frame.
 fn lines_editor(ui: &mut egui::Ui, list: &mut Vec<Line>, salt: &str) -> bool {
     let mut changed = false;
-
-    // Applying a preset replaces the whole list, and this window saves on change with no undo,
-    // so picking one in the combo must not be enough -- the user has to press Apply. The
-    // pending choice lives in egui's temp store, not in `SettingsApp`: it is UI scratch state,
-    // not config.
-    let preset_id = egui::Id::new(("dc_preset", salt));
-    let mut chosen: usize = ui.ctx().data(|d| d.get_temp(preset_id)).unwrap_or(0);
-    ui.horizontal(|ui| {
-        ui.label("Preset:");
-        egui::ComboBox::from_id_salt(("dc_preset_combo", salt))
-            .selected_text(lines::PRESETS[chosen].name)
-            .show_ui(ui, |ui| {
-                for (i, p) in lines::PRESETS.iter().enumerate() {
-                    ui.selectable_value(&mut chosen, i, p.name);
-                }
-            });
-        if ui
-            .button("Apply")
-            .on_hover_text("Replaces every line below")
-            .clicked()
-        {
-            *list = lines::PRESETS[chosen].build();
-            changed = true;
-        }
-    });
-    ui.ctx().data_mut(|d| d.insert_temp(preset_id, chosen));
 
     egui::CollapsingHeader::new("Available tokens")
         .id_salt(("dc_tokens", salt))
@@ -1025,6 +1287,10 @@ mod tests {
             dirty: false,
             last_write_ms: 0,
             cfg_path: path,
+            presets_path: PathBuf::from("presets.toml"),
+            library: crate::settings::presets::Library::new(Vec::new()),
+            pending_preset: None,
+            save_as: None,
             error: None,
             font_registry: FontRegistry::default(),
             font_search: String::new(),
@@ -1143,6 +1409,175 @@ mod tests {
         assert!(
             path.exists(),
             "flush must write even if the throttle interval has not elapsed"
+        );
+    }
+
+    /// The regression this guards: a settings window that loads `presets.toml`, drops
+    /// entries it cannot use, and then rewrites the file from the survivors alone would
+    /// silently destroy those entries on the very first Save-as or Delete. `persist_presets`
+    /// is supposed to write `library.user()` followed by `library.dropped()` -- this drives
+    /// the *real* method (not a hand-rolled stand-in for it) end to end: file on disk ->
+    /// `presets_io::load` -> `Library::new` + `add_dropped` (exactly as `SettingsApp::new`
+    /// builds it) -> `persist_presets` -> file on disk again.
+    #[test]
+    fn persist_presets_keeps_dropped_presets_in_the_file() {
+        let cfg_path = tmp_path("persist-dropped");
+        let presets_path = cfg_path.with_file_name("presets.toml");
+
+        // Fails `config::validate`: dropped by `presets_io::load` into `Loaded::dropped`.
+        let invalid = presets::Preset {
+            name: "Bad".to_string(),
+            style: Style {
+                opacity: 3.0,
+                ..Style::default()
+            },
+            lines: vec![Line::default()],
+        };
+        // Name collides with the "D-Day" built-in: dropped by `Library::new` into its own
+        // `dropped` list. Marked with a distinctive line so it can be told apart from the
+        // built-in of the same name below.
+        let colliding = presets::Preset {
+            name: "D-Day".to_string(),
+            style: Style::default(),
+            lines: vec![Line {
+                text: "shadowed".to_string(),
+                ..Line::default()
+            }],
+        };
+        // An ordinary preset the library can use.
+        let good = presets::Preset {
+            name: "Good".to_string(),
+            style: Style::default(),
+            lines: vec![Line::default()],
+        };
+        presets_io::save(
+            &presets_path,
+            &[invalid.clone(), colliding.clone(), good.clone()],
+        )
+        .unwrap();
+
+        // Build the library exactly the way `SettingsApp::new` does.
+        let loaded = presets_io::load(&presets_path);
+        let mut library = presets::Library::new(loaded.presets);
+        library.add_dropped(loaded.dropped);
+
+        let mut app = SettingsApp {
+            presets_path: presets_path.clone(),
+            library,
+            ..app_with(cfg_path)
+        };
+
+        app.persist_presets();
+
+        let reloaded = presets_io::load(&presets_path);
+        let mut names: Vec<&str> = reloaded
+            .presets
+            .iter()
+            .chain(reloaded.dropped.iter())
+            .map(|p| p.name.as_str())
+            .collect();
+        names.sort_unstable();
+        assert_eq!(
+            names,
+            vec!["Bad", "D-Day", "Good"],
+            "all three original entries -- the usable one and the two dropped ones -- must \
+             still be present in the file after persist_presets rewrites it"
+        );
+
+        // Neither dropped preset became reachable through the picker.
+        assert_eq!(
+            app.library.all().len(),
+            presets::BUILTIN_COUNT + 1,
+            "only the usable preset was added on top of the built-ins"
+        );
+        assert!(
+            app.library.all().iter().all(|p| p.name != "Bad"),
+            "the invalid preset must not be pickable"
+        );
+        assert!(
+            app.library
+                .all()
+                .iter()
+                .all(|p| p.lines.first().map(|l| l.text.as_str()) != Some("shadowed")),
+            "the name-colliding preset must not be pickable, even under the built-in's name"
+        );
+    }
+}
+
+#[cfg(test)]
+mod preset_bar_tests {
+    use super::*;
+    use crate::settings::presets;
+
+    fn app(cfg: Config) -> SettingsApp {
+        SettingsApp {
+            cfg,
+            target: Target::Global,
+            monitors: Vec::new(),
+            fonts: Vec::new(),
+            dirty: false,
+            last_write_ms: 0,
+            cfg_path: PathBuf::from("config.toml"),
+            presets_path: PathBuf::from("presets.toml"),
+            library: presets::Library::new(Vec::new()),
+            pending_preset: None,
+            save_as: None,
+            error: None,
+            font_registry: FontRegistry::default(),
+            font_search: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_fresh_config_is_clean_on_its_own_preset() {
+        let a = app(Config::default());
+        let i = a.library.find("Clock only").expect("Clock only");
+        assert_eq!(a.active(), presets::Active::Clean(i));
+    }
+
+    #[test]
+    fn a_style_edit_makes_the_active_preset_modified() {
+        let mut cfg = Config::default();
+        cfg.style.size_px = 123.0;
+        let a = app(cfg);
+        let i = a.library.find("Clock only").expect("Clock only");
+        assert_eq!(a.active(), presets::Active::Modified(i));
+    }
+
+    /// This is the invariant Finding 2's defence-in-depth exists behind: `Library::delete`
+    /// shifts every later index down, so a pending combo pick or a Save-as box's `then_apply`
+    /// captured before the delete must not survive it. Proven at the unit level here rather
+    /// than only inline in the Delete button's closure.
+    #[test]
+    fn deleting_a_preset_forgets_the_pending_pick_and_the_save_as_carry() {
+        let mut a = app(Config::default());
+        a.library = presets::Library::new(vec![presets::Preset {
+            name: "Mine".to_string(),
+            style: Style::default(),
+            lines: vec![Line::default()],
+        }]);
+        let i = presets::BUILTIN_COUNT; // "Mine", the only user preset
+        a.pending_preset = Some(i);
+        a.save_as = Some(SaveAs {
+            name: "Draft".to_string(),
+            then_apply: Some(i),
+        });
+
+        assert!(a.library.delete(i), "deleting a user preset must succeed");
+        a.forget_pending();
+
+        assert_eq!(
+            a.pending_preset, None,
+            "a pending pick captured before the delete must not survive it"
+        );
+        let save_as = a.save_as.as_ref().expect("the box itself stays open");
+        assert_eq!(
+            save_as.then_apply, None,
+            "a then_apply carry captured before the delete must not survive it"
+        );
+        assert_eq!(
+            save_as.name, "Draft",
+            "the typed name is untouched by forget_pending"
         );
     }
 }

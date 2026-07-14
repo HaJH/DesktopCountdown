@@ -128,9 +128,27 @@ Available tokens:
 An unknown token is printed as-is, so a typo shows on the wallpaper instead of vanishing
 silently.
 
-The settings window ships presets — Classic, Clock only, D-Day, Days left, Caption + Clock —
-that fill the whole list in one click. The default is Classic: `{months}m {weeks}w {days}d`
-above `{hh}:{mm}:{ss}`.
+The settings window ships presets — Clock only, Summary + Clock, D-Day, Days left,
+Caption + Clock — that replace the whole look, lines and style together, in one click. A fresh
+config starts on Clock only: `{hh}:{mm}:{ss}` on its own.
+
+Picking a preset applies it straight away. Editing on top of it does not touch the preset — the
+picker just marks the look as changed (`Clock only *`), and `Reset` puts it back. `Save as…`
+stores the current lines and style under a name of your own, so switching presets never costs
+you a look you cared to keep; a preset you saved can be deleted again, which drops the name and
+leaves the wallpaper as it is.
+
+Your own presets live in `presets.toml`, next to `config.toml`. The renderer never reads that
+file: the preset library stays out of the config the countdown is drawn from, however long it
+grows. You can write presets into it by hand. One that names a value the renderer would refuse,
+or that takes a name already spoken for, is left out of the picker — but it is left in the file,
+not deleted, so a preset you wrote is never lost to a preset you save.
+
+`config.toml` also carries a `preset` key naming which preset is active. That is bookkeeping for
+the settings window only — the renderer ignores it and draws from `[style]` and `[[line]]`
+alone — so there is no need to set it by hand. If it is missing, or names a preset that no
+longer exists, the settings window recovers the label by matching your lines and style against
+the presets it knows, rather than showing `Custom` for no reason.
 
 ### Per-monitor overrides
 
@@ -195,6 +213,11 @@ countdown only ever draws digits.
   only the per-monitor overrides go unmatched on the other system.
 - At the target time the countdown stops at `00:00:00`. It does not count up and does not
   notify.
+- **Upgrading a `config.toml` from before lines were configurable:** if it has no `[[line]]`
+  section, one is filled in for you — but always with Clock only, even if the old file had
+  `show_summary_line = true`. That flag no longer decides anything, so the summary line does
+  not carry over automatically; pick **Summary + Clock** in the settings window afterwards if
+  you want it back.
 
 ## Documentation
 
