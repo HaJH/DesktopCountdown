@@ -5,6 +5,7 @@ pub mod app;
 pub mod lines;
 pub mod overrides;
 pub mod presets;
+pub mod presets_io;
 pub mod widgets;
 
 use anyhow::Result;

@@ -80,6 +80,19 @@ pub enum Active {
     Custom,
 }
 
+/// What `Library::check_name` makes of a name typed into the Save-as box.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameStatus {
+    /// Nothing, or only whitespace.
+    Empty,
+    /// A built-in's name. Built-ins cannot be overwritten.
+    Builtin,
+    /// An existing user preset. Saving replaces it.
+    Overwrite,
+    /// Free.
+    New,
+}
+
 /// `Style` derives `PartialEq` over every field, including the legacy `show_summary_line`,
 /// which only ever holds a value on a `Style` parsed from an old config.toml -- no preset
 /// carries it. Comparing it would leave such a config `Modified` against every preset,
@@ -100,10 +113,30 @@ pub struct Library {
 }
 
 impl Library {
+    /// The user's own list may name-collide with a built-in, or with another user preset --
+    /// both possible only via a hand-edited `presets.toml`, since `check_name` blocks either
+    /// from the settings window. Either would leave `find` permanently resolving that name to
+    /// the earlier entry, so `apply` on the later, shadowed one and `resolve` afterwards would
+    /// disagree about which preset is active. The colliding entry is dropped rather than kept
+    /// under a renamed or duplicate label, so the log is the only record of it -- there is no
+    /// rule for what a machine-picked new name should be.
     pub fn new(user: Vec<Preset>) -> Self {
         let mut all = builtin();
         let n_builtin = all.len();
-        all.extend(user);
+        for preset in user {
+            if all[..n_builtin].iter().any(|p| p.name == preset.name) {
+                tracing::warn!(
+                    "dropping user preset '{}': name collides with a built-in",
+                    preset.name
+                );
+                continue;
+            }
+            if all[n_builtin..].iter().any(|p| p.name == preset.name) {
+                tracing::warn!("dropping user preset '{}': duplicate name", preset.name);
+                continue;
+            }
+            all.push(preset);
+        }
         Self { all, n_builtin }
     }
 
@@ -156,6 +189,58 @@ impl Library {
         cfg.lines = p.lines.clone();
         cfg.style = p.style.clone();
         cfg.preset = Some(p.name.clone());
+    }
+
+    /// What saving under `name` would do. The settings window uses this to label its Save
+    /// button and to block the two names it must not take.
+    pub fn check_name(&self, name: &str) -> NameStatus {
+        let name = name.trim();
+        if name.is_empty() {
+            return NameStatus::Empty;
+        }
+        match self.find(name) {
+            Some(i) if self.is_builtin(i) => NameStatus::Builtin,
+            Some(_) => NameStatus::Overwrite,
+            None => NameStatus::New,
+        }
+    }
+
+    /// Stores the current look under `name` and returns its index in `all()`. An existing user
+    /// preset of that name is replaced in place, keeping its slot -- the caller has already
+    /// confirmed the overwrite (`NameStatus::Overwrite`).
+    ///
+    /// Callers must not pass a built-in's name; `check_name` is what rejects it. Doing so
+    /// anyway appends a second preset with a duplicate name rather than corrupting a built-in.
+    pub fn save_as(&mut self, name: &str, lines: &[Line], style: &Style) -> usize {
+        let name = name.trim().to_string();
+        let preset = Preset {
+            name: name.clone(),
+            style: style.clone(),
+            lines: lines.to_vec(),
+        };
+        match self.find(&name) {
+            Some(i) if !self.is_builtin(i) => {
+                self.all[i] = preset;
+                i
+            }
+            _ => {
+                self.all.push(preset);
+                self.all.len() - 1
+            }
+        }
+    }
+
+    /// Removes a user preset. Built-ins and out-of-range indices are refused (`false`), so a
+    /// stale index from a previous frame cannot delete the wrong thing.
+    ///
+    /// The caller keeps the config's lines and style as they are and only drops the label --
+    /// deleting a preset must not change what is on the wallpaper.
+    pub fn delete(&mut self, i: usize) -> bool {
+        if self.is_builtin(i) || i >= self.all.len() {
+            return false;
+        }
+        self.all.remove(i);
+        true
     }
 }
 
@@ -367,5 +452,109 @@ mod tests {
             l.resolve(cfg.preset.as_deref(), &cfg.lines, &cfg.style),
             Active::Clean(i)
         );
+    }
+
+    #[test]
+    fn check_name_rejects_the_empty_string_and_builtin_names() {
+        let l = lib();
+        assert_eq!(l.check_name(""), NameStatus::Empty);
+        assert_eq!(l.check_name("   "), NameStatus::Empty);
+        assert_eq!(l.check_name("Clock only"), NameStatus::Builtin);
+        assert_eq!(l.check_name("Mine"), NameStatus::Overwrite);
+        assert_eq!(l.check_name("Fresh"), NameStatus::New);
+    }
+
+    #[test]
+    fn save_as_appends_a_user_preset_and_returns_its_index() {
+        let mut l = lib();
+        let lines = vec![Line {
+            text: "saved".to_string(),
+            ..Line::default()
+        }];
+        let style = Style {
+            opacity: 0.5,
+            ..Style::default()
+        };
+        let i = l.save_as("Fresh", &lines, &style);
+        assert_eq!(i, BUILTIN_COUNT + 1);
+        assert_eq!(l.user().len(), 2);
+        assert_eq!(l.all()[i].name, "Fresh");
+        assert_eq!(l.resolve(Some("Fresh"), &lines, &style), Active::Clean(i));
+    }
+
+    #[test]
+    fn save_as_over_an_existing_user_preset_replaces_it_in_place() {
+        let mut l = lib();
+        let lines = vec![Line {
+            text: "replaced".to_string(),
+            ..Line::default()
+        }];
+        let i = l.save_as("Mine", &lines, &Style::default());
+        assert_eq!(i, BUILTIN_COUNT, "kept its slot");
+        assert_eq!(l.user().len(), 1, "no duplicate");
+        assert_eq!(l.all()[i].lines, lines);
+    }
+
+    #[test]
+    fn delete_drops_a_user_preset_and_refuses_a_builtin() {
+        let mut l = lib();
+        assert!(!l.delete(0), "built-ins cannot be deleted");
+        assert_eq!(l.all().len(), BUILTIN_COUNT + 1);
+
+        assert!(l.delete(BUILTIN_COUNT));
+        assert_eq!(l.all().len(), BUILTIN_COUNT);
+        assert!(l.user().is_empty());
+    }
+
+    #[test]
+    fn delete_out_of_range_is_ignored() {
+        let mut l = lib();
+        assert!(!l.delete(999));
+        assert_eq!(l.all().len(), BUILTIN_COUNT + 1);
+    }
+
+    /// A hand-edited `presets.toml` naming a preset after a built-in cannot get past
+    /// `check_name` (that only guards the settings window's own Save-as box), so it has to be
+    /// rejected here instead -- otherwise `find` would resolve that name to the built-in
+    /// forever, and the user's entry would sit in the list unreachable by name.
+    #[test]
+    fn new_drops_a_user_preset_whose_name_collides_with_a_builtin() {
+        let l = Library::new(vec![Preset {
+            name: "D-Day".to_string(),
+            style: Style::default(),
+            lines: vec![Line {
+                text: "shadowed".to_string(),
+                ..Line::default()
+            }],
+        }]);
+        assert_eq!(l.all().len(), BUILTIN_COUNT, "the colliding entry is gone");
+        assert!(l.user().is_empty());
+    }
+
+    /// Two user presets sharing a name are just as unreachable by `find` as a built-in
+    /// collision -- only the first is ever resolved. The later one is dropped rather than
+    /// silently shadowing the first.
+    #[test]
+    fn new_drops_a_later_user_preset_that_duplicates_an_earlier_ones_name() {
+        let l = Library::new(vec![
+            Preset {
+                name: "Mine".to_string(),
+                style: Style::default(),
+                lines: vec![Line {
+                    text: "first".to_string(),
+                    ..Line::default()
+                }],
+            },
+            Preset {
+                name: "Mine".to_string(),
+                style: Style::default(),
+                lines: vec![Line {
+                    text: "second".to_string(),
+                    ..Line::default()
+                }],
+            },
+        ]);
+        assert_eq!(l.user().len(), 1);
+        assert_eq!(l.user()[0].lines[0].text, "first");
     }
 }
