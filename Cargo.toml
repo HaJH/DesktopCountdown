@@ -76,6 +76,39 @@ strip = true
 # define their own CGContext/CGImage types, which do not interoperate with the ones
 # objc2-app-kit hands back -- mixing the two families does not type-check.
 objc2 = "0.6"
+block2 = "0.6"
+dispatch2 = "0.3"
+libc = "0.2"           # flock
+png = "0.17"           # menu bar icon
+objc2-app-kit = { version = "0.3", features = [
+    "NSApplication",
+    "NSColor",
+    "NSEvent",
+    "NSGraphics",
+    "NSResponder",
+    "NSRunningApplication",
+    "NSScreen",
+    "NSView",
+    "NSWindow",
+    "NSWindowRestoration",
+] }
+objc2-foundation = { version = "0.3", features = [
+    "NSDictionary",
+    "NSEnumerator",
+    "NSGeometry",
+    "NSNotification",
+    "NSObjCRuntime",
+    "NSString",
+    "NSThread",
+    "NSTimer",
+    "NSValue",
+    "block2",
+] }
+objc2-quartz-core = { version = "0.3", features = [
+    "CALayer",
+    "CATransaction",
+    "objc2-core-foundation",
+] }
 objc2-core-foundation = { version = "0.3", features = [
     "CFBase",
     "CFArray",
@@ -84,6 +117,8 @@ objc2-core-foundation = { version = "0.3", features = [
     "CFDictionary",
     "CFNumber",
     "CFString",
+    "CFURL",
+    "CFUUID",
 ] }
 objc2-core-graphics = { version = "0.3", features = [
     "CGAffineTransform",
@@ -91,8 +126,10 @@ objc2-core-graphics = { version = "0.3", features = [
     "CGColor",
     "CGColorSpace",
     "CGContext",
+    "CGDirectDisplay",
     "CGImage",
     "CGPath",
+    "CGWindowLevel",
 ] }
 objc2-core-text = { version = "0.3", features = [
     "CTFont",

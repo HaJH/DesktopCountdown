@@ -21,10 +21,12 @@ use objc2_core_foundation::{
     CFRange, CFRetained, CFString, CGAffineTransform, CGPoint, CGRect, CGSize,
 };
 use objc2_core_graphics::{
-    kCGColorSpaceSRGB, CGBitmapContextCreate, CGBitmapContextGetBytesPerRow,
-    CGBitmapContextGetData, CGColor, CGColorSpace, CGContext, CGGlyph, CGImageAlphaInfo,
-    CGImageByteOrderInfo, CGMutablePath, CGPath, CGPathDrawingMode,
+    kCGColorSpaceSRGB, CGBitmapContextCreate, CGBitmapContextCreateImage, CGColor, CGColorSpace,
+    CGContext, CGGlyph, CGImage, CGImageAlphaInfo, CGImageByteOrderInfo, CGMutablePath, CGPath,
+    CGPathDrawingMode,
 };
+#[cfg(test)]
+use objc2_core_graphics::{CGBitmapContextGetBytesPerRow, CGBitmapContextGetData};
 use objc2_core_text::{kCTFontAttributeName, CTFont, CTLine, CTRun};
 
 use crate::color::parse_hex;
@@ -250,8 +252,18 @@ impl Canvas {
         (self.width, self.height)
     }
 
+    /// A snapshot of the pixels, for `CALayer.contents`.
+    ///
+    /// `CGBitmapContextCreateImage` copies (lazily, copy-on-write), so the canvas can be
+    /// dropped or drawn over without disturbing an image already on screen.
+    pub fn image(&self) -> Result<CFRetained<CGImage>> {
+        CGBitmapContextCreateImage(Some(&self.ctx))
+            .ok_or_else(|| anyhow!("could not snapshot the bitmap context"))
+    }
+
     /// The pixels, tightly packed as BGRA. CoreGraphics pads its rows, so this copies row
     /// by row rather than handing the raw buffer back.
+    #[cfg(test)]
     pub fn pixels(&self) -> Vec<u8> {
         let stride = CGBitmapContextGetBytesPerRow(Some(&self.ctx));
         let data = CGBitmapContextGetData(Some(&self.ctx)) as *const u8;

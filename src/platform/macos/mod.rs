@@ -3,135 +3,283 @@
 //!
 //! # Status
 //!
-//! The renderer and the font picker's font loading are real (design §9 step 3; `fonts`
-//! came forward from step 6 because the shared settings-window tests call it, and a red
-//! test suite is worse than a step done early). Everything else -- the desktop window, the
-//! monitors, the tray, autostart, the config watcher, the event loop -- is a stub that
-//! fails loudly, and lands in steps 4 through 7. `cargo test` exercises what is real; the
-//! app itself does not run on macOS yet, and says so instead of misbehaving quietly.
+//! Complete through design §9 step 6. What is left is the settings window's activation
+//! policy (step 7) and packaging (step 8).
 //!
-//! The spike (`docs/superpowers/plans/macos-spike-result.md`) has already proved the
-//! window settings the stubs will use.
+//! The window settings were verified on a real machine before any of this was written; see
+//! `docs/superpowers/plans/macos-spike-result.md`.
 
+pub mod autostart;
+mod desktop_window;
 pub mod fonts;
+mod monitors;
+mod panels;
 mod render;
+mod single_instance;
+mod tray;
+mod watch;
 
-use std::path::Path;
+use std::any::Any;
+use std::cell::{Cell, RefCell};
+use std::panic::AssertUnwindSafe;
+use std::ptr::NonNull;
+use std::rc::Rc;
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, Result};
+use block2::RcBlock;
+use jiff::Zoned;
+use objc2::rc::Retained;
+use objc2::runtime::ProtocolObject;
+use objc2::MainThreadMarker;
+use objc2_app_kit::{
+    NSApplication, NSApplicationActivationPolicy,
+    NSApplicationDidChangeScreenParametersNotification, NSEvent, NSEventModifierFlags, NSEventType,
+};
+use objc2_foundation::{NSNotification, NSNotificationCenter, NSObjectProtocol, NSPoint, NSTimer};
 
-use crate::app::AppCore;
-use crate::platform::{Attach, Frame, MonitorInfo};
+use crate::app::{ms_to_next_second, AppCore};
 
+pub use monitors::enumerate as enumerate_monitors;
+pub use panels::Panels;
 pub use render::{Canvas, Composed, Painter};
+pub use single_instance::SingleInstance;
+pub use tray::{Tray, TrayCommand};
+pub use watch::ConfigWatcher;
 
-/// What every unimplemented backend call says, so a stub is never mistaken for a bug.
-macro_rules! not_yet {
-    ($what:literal, $step:literal) => {
-        bail!(concat!(
-            "the macOS backend cannot ",
-            $what,
-            " yet (design section 9, step ",
-            $step,
-            ")"
-        ))
-    };
-}
+/// How long the config file must stay quiet before we re-read it. One save produces a short
+/// burst of events (we write a temp file and rename it over the target; an outside editor
+/// may write in several steps), so let the burst settle -- but only just: this delay is the
+/// whole latency between a settings-window edit and the wallpaper changing.
+const RELOAD_DEBOUNCE_SECS: f64 = 0.080;
 
-/// Windows sets its DPI awareness here. macOS has nothing to set: `backingScaleFactor` is
-/// per-screen and read at layout time.
+/// Sets the activation policy, which has to happen before anything makes a window or a menu
+/// bar item -- and `AppCore::new` does both, through `Tray::new`.
+///
+/// `Accessory` keeps the app out of the Dock and out of Cmd-Tab while still letting it own a
+/// menu bar item. It is the runtime half of `LSUIElement` in the bundle's plist; setting it
+/// here means an unbundled `cargo run` behaves the same way the shipped `.app` will.
 pub fn init() -> Result<()> {
+    let mtm = MainThreadMarker::new()
+        .ok_or_else(|| anyhow!("DesktopCountdown must start on the main thread"))?;
+    NSApplication::sharedApplication(mtm)
+        .setActivationPolicy(NSApplicationActivationPolicy::Accessory);
     Ok(())
 }
 
-pub fn run(_core: AppCore) -> Result<()> {
-    not_yet!("run the event loop", "4")
+/// Everything the timer blocks need, on the main thread and nowhere else.
+///
+/// The blocks reach it through a `Weak`; the config watcher's dispatched wake-up reaches it
+/// through `LOOP`. The Windows backend does the same job with `GWLP_USERDATA` and a raw
+/// pointer -- this is the same idea with the lifetime actually checked.
+struct EventLoop {
+    mtm: MainThreadMarker,
+    core: RefCell<AppCore>,
+    /// The one-shot reload timer, restarted on every filesystem wake-up so that a burst of
+    /// events collapses into a single reload. The Windows backend restarts a Win32 timer on
+    /// `WM_CONFIG_DIRTY` for exactly the same reason.
+    reload_timer: RefCell<Option<Retained<NSTimer>>>,
+    /// Set by the screen-parameters observer, drained by the next tick.
+    ///
+    /// AppKit fires that notification several times in a row for a single change, so acting
+    /// on each one would tear every window down and back up three or four times. A flag the
+    /// tick drains coalesces the burst into one rebuild, at the cost of up to a second's
+    /// delay -- which nobody sees, because the countdown is redrawn on that same tick.
+    displays_changed: Cell<bool>,
 }
 
-pub fn enumerate_monitors() -> Result<Vec<MonitorInfo>> {
-    not_yet!("enumerate monitors", "5")
+thread_local! {
+    /// The live `EventLoop`, so the config watcher's dispatched block can find it.
+    ///
+    /// Only ever touched on the main thread: `dispatch_async` to the main queue runs its
+    /// block there, and `run` sets and clears this from there too.
+    static LOOP: RefCell<Option<Rc<EventLoop>>> = const { RefCell::new(None) };
 }
 
-pub struct Panels;
+/// Called on the main thread by the config watcher, once per filesystem event.
+///
+/// Events arriving before `run` has installed the loop are dropped, exactly as the Windows
+/// watcher drops the ones that arrive before it has a window to post to: the config was just
+/// read at startup, so there is nothing to miss.
+pub(super) fn wake_for_config_change() {
+    let Some(lp) = LOOP.with(|l| l.borrow().clone()) else {
+        return;
+    };
+    lp.arm_reload();
+}
 
-impl Panels {
-    pub fn new(_painter: &Painter) -> Result<Self> {
-        not_yet!("build the desktop windows", "4")
+impl EventLoop {
+    /// Starts, or restarts, the debounce timer. Restarting is the whole point: one save is a
+    /// burst of filesystem events, and only the last of them should lead to a reload.
+    fn arm_reload(self: &Rc<Self>) {
+        if let Some(old) = self.reload_timer.borrow_mut().take() {
+            old.invalidate();
+        }
+
+        let weak = Rc::downgrade(self);
+        let block = RcBlock::new(move |_: NonNull<NSTimer>| {
+            let Some(lp) = weak.upgrade() else { return };
+            lp.reload_timer.replace(None);
+            lp.guarded("config reload", |core| {
+                core.on_config_dirty();
+                false
+            });
+        });
+
+        // SAFETY: the block only touches main-thread state, and it is attached to a timer
+        // scheduled on -- and therefore only ever fired by -- this thread's run loop.
+        let timer = unsafe {
+            NSTimer::scheduledTimerWithTimeInterval_repeats_block(
+                RELOAD_DEBOUNCE_SECS,
+                false,
+                &block,
+            )
+        };
+        *self.reload_timer.borrow_mut() = Some(timer);
     }
 
-    /// A desktop-level `NSWindow` has nothing to attach to -- no WorkerW, nothing that can
-    /// die under it -- so once the windows exist this answers `Fresh` on the first tick and
-    /// `Live` forever after.
-    pub fn ensure_attached(&mut self) -> Result<Attach> {
-        not_yet!("attach", "4")
+    /// Runs `f` against the core, swallowing a panic rather than letting it unwind into
+    /// Objective-C.
+    ///
+    /// A panic crossing back into a block AppKit called is undefined behaviour, just as one
+    /// crossing back into `DispatchMessageW` is on Windows. A panic partway through a tick
+    /// can leave `AppCore` half-updated -- a stale frame, at worst -- so log loudly and carry
+    /// on rather than take the process down.
+    fn guarded(&self, what: &str, f: impl FnOnce(&mut AppCore) -> bool) -> bool {
+        let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            let mut core = self.core.borrow_mut();
+            f(&mut core)
+        }));
+        match outcome {
+            Ok(quit) => quit,
+            Err(payload) => {
+                tracing::error!(
+                    message = panic_message(&*payload),
+                    what,
+                    "panic inside a run-loop callback, dropped"
+                );
+                false
+            }
+        }
     }
 
-    pub fn rebuild(&mut self, _wanted: &[MonitorInfo]) -> Result<()> {
-        not_yet!("rebuild the panels", "4")
-    }
-
-    pub fn monitors(&self) -> &[MonitorInfo] {
-        &[]
-    }
-
-    /// Nothing to recover: there is no composition device to lose.
-    pub fn recover(&mut self) -> Result<()> {
-        Ok(())
-    }
-
-    pub fn draw(&mut self, _painter: &Painter, _frames: &[Frame]) -> Result<()> {
-        not_yet!("draw", "4")
+    /// Returns whether the app should quit.
+    fn tick(&self) -> bool {
+        let displays_changed = self.displays_changed.replace(false);
+        self.guarded("tick", |core| {
+            if displays_changed {
+                core.on_display_change();
+            }
+            if let Err(e) = core.tick() {
+                tracing::error!("tick failed: {e:#}");
+            }
+            core.wants_quit()
+        })
     }
 }
 
-pub struct SingleInstance;
+/// Blocks in the run loop until the tray's "quit".
+pub fn run(core: AppCore) -> Result<()> {
+    let mtm = MainThreadMarker::new()
+        .ok_or_else(|| anyhow!("the run loop must be driven from the main thread"))?;
 
-impl SingleInstance {
-    pub fn acquire(_name: &str) -> Result<Self> {
-        not_yet!("take the single-instance lock", "6")
+    let lp = Rc::new(EventLoop {
+        mtm,
+        core: RefCell::new(core),
+        reload_timer: RefCell::new(None),
+        displays_changed: Cell::new(false),
+    });
+    LOOP.with(|l| *l.borrow_mut() = Some(Rc::clone(&lp)));
+
+    // Held until `run` returns: dropping the token unregisters the observer.
+    let _observer = observe_screen_changes(&lp);
+
+    schedule_tick(&lp);
+    NSApplication::sharedApplication(mtm).run();
+
+    LOOP.with(|l| *l.borrow_mut() = None);
+    Ok(())
+}
+
+fn observe_screen_changes(lp: &Rc<EventLoop>) -> Retained<ProtocolObject<dyn NSObjectProtocol>> {
+    let weak = Rc::downgrade(lp);
+    let block = RcBlock::new(move |_: NonNull<NSNotification>| {
+        if let Some(lp) = weak.upgrade() {
+            lp.displays_changed.set(true);
+        }
+    });
+
+    // SAFETY: a `None` queue means the block runs synchronously on the thread that posted
+    // the notification, and AppKit posts this one on the main thread -- which is where the
+    // state the block touches lives.
+    unsafe {
+        NSNotificationCenter::defaultCenter().addObserverForName_object_queue_usingBlock(
+            Some(NSApplicationDidChangeScreenParametersNotification),
+            None,
+            None,
+            &block,
+        )
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TrayCommand {
-    OpenConfig,
-    Reload,
-    Quit,
+/// One-shot, re-armed to the next whole second on every fire -- the same cadence the Windows
+/// backend gets from `SetTimer` plus `ms_to_next_second`, so the clock never drifts into
+/// updating just before or just after the second it is showing.
+fn schedule_tick(lp: &Rc<EventLoop>) {
+    let ms = ms_to_next_second(Zoned::now().subsec_nanosecond() as u32);
+    let weak = Rc::downgrade(lp);
+
+    let block = RcBlock::new(move |_: NonNull<NSTimer>| {
+        let Some(lp) = weak.upgrade() else { return };
+        if lp.tick() {
+            stop(lp.mtm);
+            return;
+        }
+        schedule_tick(&lp);
+    });
+
+    // SAFETY: scheduled on this thread's run loop, so the block only ever runs here, which
+    // is where every piece of state it reaches lives.
+    unsafe {
+        NSTimer::scheduledTimerWithTimeInterval_repeats_block(f64::from(ms) / 1000.0, false, &block)
+    };
 }
 
-pub struct Tray;
+/// Ends the run loop, so that `run` returns and `main`'s guards -- the log flusher above all
+/// -- actually get to run. `std::process::exit` would skip them.
+fn stop(mtm: MainThreadMarker) {
+    let app = NSApplication::sharedApplication(mtm);
+    app.stop(None);
 
-impl Tray {
-    pub fn new() -> Result<Self> {
-        not_yet!("create the menu bar item", "6")
-    }
-
-    pub fn poll(&self) -> Option<TrayCommand> {
-        None
-    }
-
-    pub fn set_warning(&self, _on: bool) -> Result<()> {
-        Ok(())
+    // `stop:` is only honoured when the *next* event comes through, and a timer is not an
+    // event. Without this the app would sit there until the user happened to click something.
+    let event =
+        NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+            NSEventType::ApplicationDefined,
+            NSPoint::new(0.0, 0.0),
+            NSEventModifierFlags::empty(),
+            0.0,
+            0,
+            None,
+            0,
+            0,
+            0,
+        );
+    match event {
+        Some(event) => app.postEvent_atStart(&event, true),
+        None => tracing::warn!("could not post the wake-up event; quitting may be delayed"),
     }
 }
 
-pub struct ConfigWatcher;
-
-impl ConfigWatcher {
-    pub fn new(_path: &Path) -> Result<Self> {
-        not_yet!("watch the config file", "6")
-    }
-}
-
-pub mod autostart {
-    use anyhow::{bail, Result};
-
-    pub fn is_enabled() -> Result<bool> {
-        not_yet!("read the launch agent", "6")
-    }
-
-    pub fn set_enabled(_on: bool) -> Result<()> {
-        not_yet!("write the launch agent", "6")
+/// Renders a caught panic payload for logging. The standard library's own panics carry
+/// either a `&str` or a `String`, which covers every panic this process produces; anything
+/// else logs a fixed string rather than failing to log at all.
+fn panic_message(payload: &(dyn Any + Send)) -> &str {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.as_str()
+    } else {
+        "<non-string panic payload>"
     }
 }
 
@@ -139,21 +287,14 @@ pub mod autostart {
 mod tests {
     use super::*;
 
-    /// The stubs must not be mistaken for working code: each one has to fail, and say why.
     #[test]
-    fn the_unimplemented_backend_calls_fail_loudly() {
-        let e = enumerate_monitors().unwrap_err().to_string();
-        assert!(e.contains("macOS backend"), "unhelpful message: {e}");
-        assert!(e.contains("step"), "the message should name the step: {e}");
-
-        assert!(Tray::new().is_err());
-        assert!(SingleInstance::acquire("x").is_err());
-        assert!(autostart::is_enabled().is_err());
+    fn the_painter_is_real() {
+        assert!(Painter::new().is_ok());
     }
 
-    /// The renderer, on the other hand, is real.
+    /// Reading the launch agent must never fail just because there is not one.
     #[test]
-    fn the_painter_is_not_a_stub() {
-        assert!(Painter::new().is_ok());
+    fn autostart_reads_as_off_when_no_launch_agent_is_installed() {
+        assert!(autostart::is_enabled().is_ok());
     }
 }

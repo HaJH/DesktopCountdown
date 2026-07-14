@@ -1,5 +1,7 @@
 //! DirectWrite text layout construction. No Direct2D.
 
+use std::cell::RefCell;
+
 use anyhow::Result;
 use windows::core::{Interface, HSTRING};
 use windows::Win32::Graphics::DirectWrite::*;
@@ -11,12 +13,19 @@ const FALLBACKS: [&str; 2] = ["Consolas", "Segoe UI"];
 
 pub struct TextEngine {
     factory: IDWriteFactory,
+    /// The last family we complained about. `resolve_family` runs once a second, forever,
+    /// and the log file does not rotate -- so a config naming a font this machine does not
+    /// have would otherwise add a line a second for as long as the app runs.
+    warned: RefCell<Option<String>>,
 }
 
 impl TextEngine {
     pub fn new() -> Result<Self> {
         let factory: IDWriteFactory = unsafe { DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)? };
-        Ok(Self { factory })
+        Ok(Self {
+            factory,
+            warned: RefCell::new(None),
+        })
     }
 
     fn family_exists(&self, family: &str) -> bool {
@@ -45,9 +54,18 @@ impl TextEngine {
     /// The configured family if installed, otherwise the first installed fallback.
     pub fn resolve_family(&self, family: &str) -> String {
         if self.family_exists(family) {
+            *self.warned.borrow_mut() = None;
             return family.to_string();
         }
-        tracing::warn!(family, "font family not installed, falling back");
+
+        // Once per family, not once per tick.
+        let mut warned = self.warned.borrow_mut();
+        if warned.as_deref() != Some(family) {
+            tracing::warn!(family, "font family not installed, falling back");
+            *warned = Some(family.to_string());
+        }
+        drop(warned);
+
         for f in FALLBACKS {
             if self.family_exists(f) {
                 return f.to_string();

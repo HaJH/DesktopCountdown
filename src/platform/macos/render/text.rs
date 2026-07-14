@@ -1,6 +1,7 @@
 //! CoreText line layout. No CoreGraphics drawing. The macOS counterpart of the Windows
 //! backend's `render/text.rs`.
 
+use std::cell::RefCell;
 use std::ffi::c_void;
 use std::ptr;
 
@@ -78,11 +79,18 @@ pub struct Laid {
     pub ascent: f64,
 }
 
-pub struct TextEngine;
+pub struct TextEngine {
+    /// The last family we complained about. `resolve_family` runs once a second, forever,
+    /// and the log file does not rotate -- so a config naming a font this machine does not
+    /// have would otherwise add a line a second for as long as the app runs.
+    warned: RefCell<Option<String>>,
+}
 
 impl TextEngine {
     pub fn new() -> Result<Self> {
-        Ok(Self)
+        Ok(Self {
+            warned: RefCell::new(None),
+        })
     }
 
     /// The configured family if installed, otherwise the first installed fallback.
@@ -92,9 +100,18 @@ impl TextEngine {
     /// ourselves rather than let it choose for us.
     pub fn resolve_family(&self, family: &str) -> String {
         if family_exists(family) {
+            *self.warned.borrow_mut() = None;
             return family.to_string();
         }
-        tracing::warn!(family, "font family not installed, falling back");
+
+        // Once per family, not once per tick.
+        let mut warned = self.warned.borrow_mut();
+        if warned.as_deref() != Some(family) {
+            tracing::warn!(family, "font family not installed, falling back");
+            *warned = Some(family.to_string());
+        }
+        drop(warned);
+
         for f in FALLBACKS {
             if family_exists(f) {
                 return f.to_string();

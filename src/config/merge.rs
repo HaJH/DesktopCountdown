@@ -99,7 +99,7 @@ mod tests {
         assert_eq!(e.anchor, Anchor::Center);
         assert_eq!(e.offset_px, [0, 0]);
         assert_eq!(e.style.size_px, 64.0);
-        assert_eq!(e.style.font_family, "Consolas");
+        assert_eq!(e.style.font_family, crate::config::DEFAULT_FONT_FAMILY);
     }
 
     #[test]
@@ -124,7 +124,7 @@ mod tests {
         assert_eq!(e.anchor, Anchor::TopCenter);
         assert_eq!(e.style.size_px, 48.0);
         // untouched fields keep global values
-        assert_eq!(e.style.font_family, "Consolas");
+        assert_eq!(e.style.font_family, crate::config::DEFAULT_FONT_FAMILY);
         assert_eq!(e.style.opacity, 0.85);
         assert_eq!(e.offset_px, [0, 0]);
         assert!(e.enabled);
