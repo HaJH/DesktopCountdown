@@ -8,7 +8,7 @@ use std::fs::{File, OpenOptions};
 use std::os::unix::io::AsRawFd;
 use std::path::PathBuf;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 
 pub struct SingleInstance {
     /// Holds the `flock`. Closing the file releases it, so this must outlive the app.
@@ -17,11 +17,12 @@ pub struct SingleInstance {
 
 impl SingleInstance {
     /// Takes an exclusive lock on `~/Library/Application Support/DesktopCountdown/{name}.lock`.
-    /// Returns `Err` if another process already holds it.
+    /// `Ok(None)` means another process already holds it -- an expected outcome the caller
+    /// decides what to do with, not an error. `Err` is a real failure to open or lock the file.
     ///
     /// The renderer and the settings window pass different names, so the two never contend
     /// with each other.
-    pub fn acquire(name: &str) -> Result<Self> {
+    pub fn acquire(name: &str) -> Result<Option<Self>> {
         let path = lock_path(name)?;
         let file = OpenOptions::new()
             .create(true)
@@ -36,12 +37,12 @@ impl SingleInstance {
         if locked != 0 {
             let err = std::io::Error::last_os_error();
             if err.kind() == std::io::ErrorKind::WouldBlock {
-                bail!("another instance is already running");
+                return Ok(None);
             }
             return Err(err).with_context(|| format!("locking {}", path.display()));
         }
 
-        Ok(Self { _file: file })
+        Ok(Some(Self { _file: file }))
     }
 }
 
@@ -75,15 +76,15 @@ mod tests {
     }
 
     #[test]
-    fn second_acquire_fails_while_the_first_is_held() {
-        let first = SingleInstance::acquire(TEST_NAME).unwrap();
+    fn second_acquire_reports_already_running() {
+        let first = SingleInstance::acquire(TEST_NAME).unwrap().unwrap();
 
-        assert!(SingleInstance::acquire(TEST_NAME).is_err());
+        assert!(SingleInstance::acquire(TEST_NAME).unwrap().is_none());
 
         drop(first);
 
         assert!(
-            SingleInstance::acquire(TEST_NAME).is_ok(),
+            SingleInstance::acquire(TEST_NAME).unwrap().is_some(),
             "the lock was not released when the guard was dropped"
         );
         sweep(TEST_NAME);
@@ -93,8 +94,12 @@ mod tests {
     /// window's, and vice versa.
     #[test]
     fn different_names_do_not_contend() {
-        let _renderer = SingleInstance::acquire("DesktopCountdown-Test-A").unwrap();
-        assert!(SingleInstance::acquire("DesktopCountdown-Test-B").is_ok());
+        let _renderer = SingleInstance::acquire("DesktopCountdown-Test-A")
+            .unwrap()
+            .unwrap();
+        assert!(SingleInstance::acquire("DesktopCountdown-Test-B")
+            .unwrap()
+            .is_some());
         sweep("DesktopCountdown-Test-A");
         sweep("DesktopCountdown-Test-B");
     }

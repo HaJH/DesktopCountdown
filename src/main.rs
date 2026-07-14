@@ -21,7 +21,19 @@ fn main() -> Result<()> {
     platform::init()?;
 
     let _guard = logging::init(&paths::log_dir()?);
-    let _instance = SingleInstance::acquire(RENDERER_INSTANCE)?;
+    let Some(_instance) = SingleInstance::acquire(RENDERER_INSTANCE)? else {
+        // A second launch opens the settings window instead of dying on the lock.
+        // It is how a user who cannot reach the tray / menu bar icon -- macOS hides
+        // overflowed menu bar items outright -- still gets to the app.
+        //
+        // Spawned detached, like any settings window the user starts by hand: the
+        // running renderer does not know about it, so quitting from the tray leaves
+        // it open (see `AppCore::open_settings` for the tray-owned counterpart).
+        tracing::info!("already running; opening the settings window instead");
+        let exe = std::env::current_exe()?;
+        std::process::Command::new(exe).arg("--settings").spawn()?;
+        return Ok(());
+    };
 
     let cfg_path = paths::config_path()?;
     tracing::info!(?cfg_path, "starting");

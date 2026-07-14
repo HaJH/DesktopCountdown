@@ -68,6 +68,10 @@ The app has no window of its own. Everything hangs off the tray / menu bar icon:
 | **Reload config** | Re-reads `config.toml`, for when you edited it by hand. |
 | **Quit** | Stops the countdown. |
 
+Launching the app again while it is running also opens the settings window — useful when the
+tray / menu bar icon is hard to reach (a crowded macOS menu bar hides overflowed icons
+entirely).
+
 In the settings window, set the target time, then pick a **preset** — a named snapshot of the
 whole look, lines and style together. Editing on top of one does not change it; `Reset` puts it
 back, and `Save as…` keeps your version under a name of your own. The tabs across the top switch

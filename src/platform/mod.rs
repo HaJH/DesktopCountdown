@@ -28,7 +28,7 @@
 //!                    fn draw(&mut self, &Painter, &[Frame]) -> Result<()>;
 //!                    fn recover(&mut self) -> Result<()>; }
 //!
-//! struct SingleInstance { fn acquire(name: &str) -> Result<Self>; }
+//! struct SingleInstance { fn acquire(name: &str) -> Result<Option<Self>>; }
 //! struct Tray           { fn new() -> Result<Self>;
 //!                         fn poll(&self) -> Option<TrayCommand>;
 //!                         fn set_warning(&self, on: bool) -> Result<()>; }

@@ -51,6 +51,15 @@
 - Wallpaper Engine 등 타 벽지 앱과 공존 시 `raise_if_covered` 동작.
 - C2(wndproc 재진입 가드) 수정 후 모니터 배율 변경/도킹 반복 시 안정성.
 
+## macOS 재실행 → 설정 창 (부분 구현, 후속 필요)
+
+"두 번째 실행 = 설정 창 열기"는 단일 인스턴스 락 경로로 구현했다(`main.rs`). Windows에서는
+더블클릭이 항상 새 프로세스라 완전히 동작하고, macOS에서도 `open -n` / 바이너리 직접 실행은
+동작한다. 그러나 **macOS에서 Finder/Dock으로 재실행하면 새 프로세스 없이 기존 인스턴스가
+활성화**되어 락 경로를 타지 않는다. 완전한 해법은 NSApplicationDelegate의
+`applicationShouldHandleReopen:hasVisibleWindows:`에서 `--settings`를 스폰하는 것
+(objc2 delegate 선언 필요). 실기 Mac 검증 없이는 넣지 않기로 함.
+
 ## Won't-fix (기록만)
 
 - `breakdown`의 `.expect()` 메시지가 "jiff 버그"라 단정 — 실 날짜 범위에서 도달 불가.

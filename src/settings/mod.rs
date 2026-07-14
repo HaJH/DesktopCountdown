@@ -20,12 +20,9 @@ use app::SettingsApp;
 /// `instance_name` is the renderer's lock under a different name, so the two processes
 /// never contend with each other.
 pub fn run(instance_name: &str) -> Result<()> {
-    let _instance = match SingleInstance::acquire(instance_name) {
-        Ok(g) => g,
-        Err(_) => {
-            tracing::info!("settings window already open, exiting");
-            return Ok(());
-        }
+    let Some(_instance) = SingleInstance::acquire(instance_name)? else {
+        tracing::info!("settings window already open, exiting");
+        return Ok(());
     };
 
     let mut viewport = eframe::egui::ViewportBuilder::default()
