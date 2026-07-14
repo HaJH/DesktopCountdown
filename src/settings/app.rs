@@ -117,7 +117,7 @@ impl FontRegistry {
             return false;
         }
         match crate::platform::fonts::font_file(family) {
-            Some(file) => {
+            Some(file) if can_draw_own_name(&file, family) => {
                 let mut data = egui::FontData::from_owned(file.bytes);
                 data.index = file.index;
                 ctx.add_font(egui::epaint::text::FontInsert::new(
@@ -130,12 +130,37 @@ impl FontRegistry {
                 ));
                 self.pending.insert(family.to_string());
             }
-            None => {
+            _ => {
                 self.failed.insert(family.to_string());
             }
         }
         false
     }
+}
+
+/// Whether the face behind `family` has a glyph for every character of `family` itself.
+///
+/// `FontFamily::Name(family)` binds a family list holding that one font and nothing else,
+/// so epaint has no fallback inside it: a character the font lacks is drawn as epaint's
+/// replacement glyph — '◻' or '?' where the font has one of those, and *nothing at all*
+/// (`GlyphInfo::default()`, glyph 0 with zero advance) where it has neither.
+///
+/// Which is what a script or symbol font's own name is made of. Every Arabic, Hebrew and
+/// Indic face on macOS carries its own script and no Latin, and their family names are
+/// Latin — so the picker drew "Geeza Pro" as a blank row and "Arial Hebrew" as "?????".
+/// A font that cannot draw its own name renders that name in the UI font instead, which
+/// has the glyphs; the ones that *can* (including the CJK-named families this per-family
+/// rendering exists for) are unaffected.
+fn can_draw_own_name(file: &platform::fonts::FontFile, family: &str) -> bool {
+    use skrifa::MetadataProvider;
+
+    // `font_file` parse-checks the bytes before returning them, so this does not fail in
+    // practice -- and a font we cannot read is not one to bind either way.
+    let Ok(font) = skrifa::FontRef::from_index(&file.bytes, file.index) else {
+        return false;
+    };
+    let charmap = font.charmap();
+    family.chars().all(|c| charmap.map(c).is_some())
 }
 
 impl SettingsApp {
@@ -1487,6 +1512,48 @@ mod tests {
         assert!(
             !reg.ensure(&ctx, "NoSuchFamily12345XYZ"),
             "a family with no local file must never become usable, even across frames"
+        );
+    }
+
+    /// A Latin font ships on both systems; only the name differs.
+    #[cfg(target_os = "macos")]
+    const LATIN_FAMILY: &str = "Menlo";
+    #[cfg(windows)]
+    const LATIN_FAMILY: &str = "Arial";
+
+    /// The bug `can_draw_own_name` exists for, with the scripts swapped so that the test
+    /// does not depend on which script fonts a machine happens to have installed: a font
+    /// asked to draw a name in a script it does not carry cannot draw it. On the real
+    /// systems it is the other way round -- an Arabic or Hebrew face asked to draw its own
+    /// *Latin* name -- and the picker rendered those rows as "?????" or as nothing at all.
+    #[test]
+    fn a_font_cannot_draw_a_name_in_a_script_it_does_not_carry() {
+        let file = platform::fonts::font_file(LATIN_FAMILY).expect("a Latin font is installed");
+        assert!(
+            can_draw_own_name(&file, LATIN_FAMILY),
+            "{LATIN_FAMILY} must still render in its own font"
+        );
+        assert!(
+            !can_draw_own_name(&file, "글꼴이름"),
+            "a Latin font has no Hangul glyphs, so it cannot draw a Hangul name"
+        );
+    }
+
+    /// The real thing, on the system where it was reported. Zapf Dingbats has no Latin
+    /// glyphs and no '?' either, so the picker drew its row as an empty line.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_latinless_system_font_is_never_bound_to_its_own_name() {
+        const DINGBATS: &str = "Zapf Dingbats";
+        let mut reg = FontRegistry::default();
+        let ctx = egui::Context::default();
+
+        assert!(!reg.ensure(&ctx, DINGBATS));
+        reg.promote_pending();
+        assert!(
+            !reg.ensure(&ctx, DINGBATS),
+            "a font that cannot draw its own name must never become usable -- \
+             the row renders in the UI font instead"
         );
     }
 
