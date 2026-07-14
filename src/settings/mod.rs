@@ -30,7 +30,7 @@ pub fn run(instance_name: &str) -> Result<()> {
 
     let mut viewport = eframe::egui::ViewportBuilder::default()
         .with_inner_size([720.0, 560.0])
-        .with_title("DesktopCountdown 설정");
+        .with_title("DesktopCountdown Settings");
     if let Some(icon) = window_icon() {
         viewport = viewport.with_icon(icon);
     }
@@ -40,7 +40,7 @@ pub fn run(instance_name: &str) -> Result<()> {
         ..Default::default()
     };
     eframe::run_native(
-        "DesktopCountdown 설정",
+        "DesktopCountdown Settings",
         native_options,
         Box::new(|cc| {
             install_cjk_fallback(&cc.egui_ctx);
@@ -58,7 +58,7 @@ pub fn run(instance_name: &str) -> Result<()> {
 /// processes -- the renderer and this one -- come out of the same bundle, so both inherit it.
 ///
 /// winit honours the bundle's manifest unless told otherwise, which would leave the settings
-/// window unable to come to the front: the user picks "설정 열기" from the menu, a window
+/// window unable to come to the front: the user picks "Open settings" from the menu, a window
 /// appears somewhere behind everything, and nothing brings it forward. Overriding the policy
 /// here is what makes the menu item do what it says. (`with_activate_ignoring_other_apps`
 /// then puts it in front of whatever the user was looking at, which is the point of having

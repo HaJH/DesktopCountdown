@@ -47,6 +47,16 @@ pub struct AppCore {
     /// as long as the outage lasts, neither of which anyone needs.
     warned: bool,
     quit: bool,
+    /// The settings window this process spawned, while it is still running.
+    ///
+    /// Kept so quitting from the tray takes the settings window with it. Without the handle
+    /// the child is simply detached, and "quit" would leave a settings window editing the
+    /// config of an app that is no longer drawing it.
+    ///
+    /// A settings window the user started some other way (a second copy of the exe, a
+    /// shortcut with `--settings`) is not ours and is left alone -- it holds its own
+    /// single-instance lock, so there is never more than one either way.
+    settings: Option<std::process::Child>,
 }
 
 impl AppCore {
@@ -77,6 +87,7 @@ impl AppCore {
             // `Tray::new` starts with the plain tooltip, so we start in step with it.
             warned: false,
             quit: false,
+            settings: None,
         })
     }
 
@@ -103,23 +114,72 @@ impl AppCore {
         self.warned = on;
     }
 
+    /// Opens the settings window, keeping the handle so `close_settings` can take it down
+    /// again. Spawning a second one while the first is up is harmless -- it exits at once on
+    /// the settings single-instance lock -- but the handle we would store for it would be a
+    /// process that is already gone, so don't.
+    fn open_settings(&mut self) {
+        if self.settings.is_some() {
+            return;
+        }
+        let exe = match std::env::current_exe() {
+            Ok(exe) => exe,
+            Err(e) => {
+                tracing::error!("current_exe failed: {e:#}");
+                return;
+            }
+        };
+        match std::process::Command::new(exe).arg("--settings").spawn() {
+            Ok(child) => self.settings = Some(child),
+            Err(e) => tracing::error!("opening the settings window failed: {e:#}"),
+        }
+    }
+
+    /// Takes our settings window down with us. Quitting an app that leaves a settings window
+    /// behind -- still editing the config of something that is no longer drawing it -- is not
+    /// what "quit" means.
+    ///
+    /// This kills rather than asks. There is no portable way to ask another process's GUI to
+    /// close itself, and a per-platform one buys little here: the settings window writes
+    /// config.toml on a 100 ms throttle *while* you edit (`SAVE_INTERVAL_MS`), so what a kill
+    /// can lose is under one throttle interval of a slider drag -- the same window the
+    /// throttle already tolerates.
+    fn close_settings(&mut self) {
+        let Some(mut child) = self.settings.take() else {
+            return;
+        };
+        // It may have exited since the last `try_wait`. Killing a process that is already
+        // gone is an error rather than a no-op, and one worth no log line.
+        if !matches!(child.try_wait(), Ok(None)) {
+            return;
+        }
+        if let Err(e) = child.kill() {
+            tracing::warn!("could not close the settings window: {e:#}");
+            return;
+        }
+        let _ = child.wait();
+        tracing::info!("settings window closed with the app");
+    }
+
     /// Runs once a second: drains the tray, makes sure the surfaces are attached, and
     /// redraws only when the countdown text changed.
     pub fn tick(&mut self) -> Result<()> {
+        // A settings window the user closed themselves is not ours to kill any more, and on
+        // Unix it stays a zombie until someone reaps it.
+        if let Some(child) = &mut self.settings {
+            if !matches!(child.try_wait(), Ok(None)) {
+                self.settings = None;
+            }
+        }
+
         match self.tray.poll() {
             Some(TrayCommand::Quit) => {
+                self.close_settings();
                 self.quit = true;
                 return Ok(());
             }
             Some(TrayCommand::Reload) => self.reload(),
-            Some(TrayCommand::OpenConfig) => match std::env::current_exe() {
-                Ok(exe) => {
-                    if let Err(e) = std::process::Command::new(exe).arg("--settings").spawn() {
-                        tracing::error!("opening the settings window failed: {e:#}");
-                    }
-                }
-                Err(e) => tracing::error!("current_exe failed: {e:#}"),
-            },
+            Some(TrayCommand::OpenConfig) => self.open_settings(),
             None => {}
         }
 
@@ -314,6 +374,16 @@ impl AppCore {
         }
 
         self.panels.draw(&self.painter, &frames)
+    }
+}
+
+impl Drop for AppCore {
+    /// The safety net for `close_settings`: whatever brings the app down -- the tray's quit,
+    /// which calls it directly, or an exit that never reaches that arm -- the settings window
+    /// this process opened goes with it. `close_settings` takes the handle, so running twice
+    /// is not a problem.
+    fn drop(&mut self) {
+        self.close_settings();
     }
 }
 

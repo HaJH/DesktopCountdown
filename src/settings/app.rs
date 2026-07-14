@@ -553,26 +553,73 @@ impl SettingsApp {
         }
     }
 
+    /// The tab strip: the global settings, then one tab per monitor.
+    ///
+    /// This was a combo box, which hid the monitors -- and with them the fact that a monitor
+    /// can be configured at all -- behind a click. Tabs say it outright, and once the names
+    /// are on screen there is room to say more: each tab carries the display's size, a dot
+    /// when that monitor departs from the global look, and goes dim when the countdown is
+    /// switched off there. The whole multi-monitor state reads at a glance rather than one
+    /// dropdown entry at a time.
     fn ui_target_selector(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label("Editing:");
-            let selected_text = match self.target {
-                Target::Global => "Global default".to_string(),
-                Target::Monitor(i) => self
-                    .monitors
-                    .get(i)
-                    .map(|m| m.name.clone())
-                    .unwrap_or_else(|| "(Unknown monitor)".to_string()),
-            };
-            egui::ComboBox::from_id_salt("dc_target_combo")
-                .selected_text(selected_text)
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.target, Target::Global, "Global default");
+        // The assignment has to wait for the loop below to let go of `self`.
+        let mut picked: Option<Target> = None;
+
+        egui::ScrollArea::horizontal()
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let n = self.monitors.len();
+                    let subtitle = match n {
+                        1 => "1 monitor".to_string(),
+                        n => format!("{n} monitors"),
+                    };
+                    if target_tab(
+                        ui,
+                        self.target == Target::Global,
+                        "Global",
+                        &subtitle,
+                        false,
+                        true,
+                        "The settings every monitor starts from",
+                    )
+                    .clicked()
+                    {
+                        picked = Some(Target::Global);
+                    }
+
+                    ui.separator();
+
                     for (i, m) in self.monitors.iter().enumerate() {
-                        ui.selectable_value(&mut self.target, Target::Monitor(i), m.name.clone());
+                        let (title, size) = widgets::split_monitor_name(&m.name);
+                        let o = overrides::find_override(&self.cfg, &m.id);
+                        let overridden = o.is_some_and(overrides::has_style_override);
+                        let shown = o.and_then(|o| o.enabled).unwrap_or(true);
+                        let hover = match (shown, overridden) {
+                            (false, _) => "The countdown is switched off on this monitor",
+                            (true, true) => "This monitor overrides the global settings",
+                            (true, false) => "This monitor follows the global settings",
+                        };
+                        if target_tab(
+                            ui,
+                            self.target == Target::Monitor(i),
+                            title,
+                            size,
+                            overridden,
+                            shown,
+                            hover,
+                        )
+                        .clicked()
+                        {
+                            picked = Some(Target::Monitor(i));
+                        }
                     }
                 });
-        });
+            });
+
+        if let Some(t) = picked {
+            self.target = t;
+        }
     }
 
     /// Approximate desktop preview: an egui-drawn dark panel showing the effective line list
@@ -1097,6 +1144,68 @@ fn style_fields(
         .changed();
 
     changed
+}
+
+/// One tab in the target strip: a title over a smaller subtitle, sized so the strip reads as
+/// tabs rather than as a row of buttons.
+///
+/// `overridden` earns a dot after the title -- the one thing you cannot infer from a monitor's
+/// name is whether you have already customized it. `shown` false (the countdown is switched off
+/// there) dims the whole tab, so a monitor you have silenced does not look like one you have
+/// simply not visited.
+fn target_tab(
+    ui: &mut egui::Ui,
+    selected: bool,
+    title: &str,
+    subtitle: &str,
+    overridden: bool,
+    shown: bool,
+    hover: &str,
+) -> egui::Response {
+    let visuals = ui.visuals();
+    let weak = visuals.weak_text_color();
+    let title_color = if shown { visuals.text_color() } else { weak };
+    let dot_color = visuals.selection.bg_fill;
+
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        title,
+        0.0,
+        egui::TextFormat {
+            font_id: egui::FontId::proportional(14.0),
+            color: title_color,
+            ..Default::default()
+        },
+    );
+    if overridden {
+        job.append(
+            " \u{25cf}",
+            0.0,
+            egui::TextFormat {
+                font_id: egui::FontId::proportional(9.0),
+                color: dot_color,
+                ..Default::default()
+            },
+        );
+    }
+    if !subtitle.is_empty() {
+        job.append(
+            &format!("\n{subtitle}"),
+            0.0,
+            egui::TextFormat {
+                font_id: egui::FontId::proportional(10.0),
+                color: weak,
+                ..Default::default()
+            },
+        );
+    }
+
+    ui.add(
+        egui::Button::new(job)
+            .selected(selected)
+            .min_size(egui::vec2(104.0, 40.0)),
+    )
+    .on_hover_text(hover)
 }
 
 fn align_label(align: Align) -> &'static str {

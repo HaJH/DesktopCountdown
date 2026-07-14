@@ -59,9 +59,9 @@ pub struct Tray {
 
 impl Tray {
     pub fn new() -> Result<Self> {
-        let open = MenuItem::new("설정 열기", true, None);
-        let reload = MenuItem::new("다시 불러오기", true, None);
-        let quit = MenuItem::new("종료", true, None);
+        let open = MenuItem::new("Open settings", true, None);
+        let reload = MenuItem::new("Reload config", true, None);
+        let quit = MenuItem::new("Quit", true, None);
 
         let menu = Menu::new();
         menu.append_items(&[&open, &PredefinedMenuItem::separator(), &reload, &quit])?;
@@ -101,7 +101,7 @@ impl Tray {
     pub fn set_warning(&self, on: bool) -> Result<()> {
         tracing::debug!(on, "tray: set_warning");
         let tip = if on {
-            "DesktopCountdown — 설정 오류 (log.txt 확인)"
+            "DesktopCountdown — config error (see log.txt)"
         } else {
             "DesktopCountdown"
         };
