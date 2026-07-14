@@ -59,6 +59,40 @@ pub fn breakdown(now: &Zoned, target: &Zoned) -> Breakdown {
     }
 }
 
+/// The within-day countdown to `target` (a clock time, not a date): time left
+/// before it, time elapsed since it (`overtime`) after, resetting when
+/// midnight makes "today's target" the next day's.
+///
+/// `hours` stays in 0..=23 except on a DST-lengthened 25-hour day, where the
+/// whole-hour count can reach 24.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DailyBreakdown {
+    pub hours: i64,
+    pub minutes: i64,
+    pub seconds: i64,
+    /// Past today's target and before midnight; the fields hold elapsed time.
+    pub overtime: bool,
+}
+
+pub fn daily_breakdown(now: &Zoned, target: jiff::civil::Time) -> DailyBreakdown {
+    // A civil time that does not exist today (a DST gap) is resolved by
+    // jiff's compatible disambiguation; the range error cannot happen for a
+    // date a running clock can produce.
+    let today_target = now
+        .date()
+        .to_datetime(target)
+        .to_zoned(now.time_zone().clone())
+        .expect("today's date at a valid clock time is within jiff's range");
+    let secs = today_target.timestamp().as_second() - now.timestamp().as_second();
+    let (overtime, secs) = if secs > 0 { (false, secs) } else { (true, -secs) };
+    DailyBreakdown {
+        hours: secs / 3600,
+        minutes: (secs / 60) % 60,
+        seconds: secs % 60,
+        overtime,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -195,5 +229,96 @@ mod tests {
         assert_eq!(b, expected);
         assert_eq!(format_summary(&b), "3m 1w 6d");
         assert_eq!(format_main(&b), "2529:30:00");
+    }
+
+    // ---- daily_breakdown ----
+
+    use jiff::civil::time;
+
+    #[test]
+    fn daily_counts_down_before_the_target() {
+        let d = daily_breakdown(&z(2026, 7, 15, 15, 44, 30), time(18, 0, 0, 0));
+        assert_eq!(
+            d,
+            DailyBreakdown {
+                hours: 2,
+                minutes: 15,
+                seconds: 30,
+                overtime: false
+            }
+        );
+    }
+
+    #[test]
+    fn daily_flips_to_overtime_exactly_at_the_target() {
+        let d = daily_breakdown(&z(2026, 7, 15, 18, 0, 0), time(18, 0, 0, 0));
+        assert_eq!(
+            d,
+            DailyBreakdown {
+                hours: 0,
+                minutes: 0,
+                seconds: 0,
+                overtime: true
+            }
+        );
+    }
+
+    #[test]
+    fn daily_counts_up_after_the_target() {
+        let d = daily_breakdown(&z(2026, 7, 15, 19, 20, 5), time(18, 0, 0, 0));
+        assert_eq!(
+            d,
+            DailyBreakdown {
+                hours: 1,
+                minutes: 20,
+                seconds: 5,
+                overtime: true
+            }
+        );
+    }
+
+    #[test]
+    fn daily_overtime_runs_to_the_end_of_the_day() {
+        let d = daily_breakdown(&z(2026, 7, 15, 23, 59, 59), time(18, 0, 0, 0));
+        assert_eq!(
+            d,
+            DailyBreakdown {
+                hours: 5,
+                minutes: 59,
+                seconds: 59,
+                overtime: true
+            }
+        );
+    }
+
+    /// Midnight needs no reset logic: `now.date()` has moved on, so "today's
+    /// target" is the next day's and the countdown resumes by construction.
+    #[test]
+    fn daily_resets_to_a_countdown_at_midnight() {
+        let d = daily_breakdown(&z(2026, 7, 16, 0, 0, 1), time(18, 0, 0, 0));
+        assert_eq!(
+            d,
+            DailyBreakdown {
+                hours: 17,
+                minutes: 59,
+                seconds: 59,
+                overtime: false
+            }
+        );
+    }
+
+    /// A midnight target is overtime all day long: well-defined, if odd.
+    #[test]
+    fn daily_midnight_target_is_always_overtime() {
+        let d = daily_breakdown(&z(2026, 7, 15, 12, 0, 0), time(0, 0, 0, 0));
+        assert_eq!(
+            d,
+            DailyBreakdown {
+                hours: 12,
+                minutes: 0,
+                seconds: 0,
+                overtime: true
+            }
+        );
     }
 }
