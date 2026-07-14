@@ -9,7 +9,7 @@ use eframe::egui;
 
 use crate::config::{self, Align, Anchor, Config, DrawMode, Line, Style};
 use crate::platform;
-use crate::settings::{lines, overrides, widgets};
+use crate::settings::{lines, overrides, presets, presets_io, widgets};
 
 /// Minimum gap between two writes of `config.toml`.
 ///
@@ -46,6 +46,9 @@ pub struct SettingsApp {
     /// When `config.toml` was last written, for the `SAVE_INTERVAL_MS` throttle.
     pub(crate) last_write_ms: u64,
     pub(crate) cfg_path: PathBuf,
+    pub(crate) presets_path: PathBuf,
+    /// The built-ins plus the user's own, in picker order.
+    pub(crate) library: presets::Library,
     pub(crate) error: Option<String>,
     /// Tracks which font families are safe to render via `FontFamily::Name` (see
     /// `FontRegistry`).
@@ -125,6 +128,8 @@ impl SettingsApp {
     pub fn new() -> Result<Self> {
         let cfg_path = crate::paths::config_path()?;
         let cfg = config::load_or_create(&cfg_path)?;
+        let presets_path = crate::paths::presets_path()?;
+        let library = presets::Library::new(presets_io::load(&presets_path));
         let monitors = platform::enumerate_monitors()
             .unwrap_or_default()
             .into_iter()
@@ -142,6 +147,8 @@ impl SettingsApp {
             dirty: false,
             last_write_ms: 0,
             cfg_path,
+            presets_path,
+            library,
             error: None,
             font_registry: FontRegistry::default(),
             font_search: String::new(),
@@ -198,6 +205,13 @@ impl SettingsApp {
             },
             Err(e) => self.error = Some(format!("Invalid config: {e}")),
         }
+    }
+
+    /// Which preset the current look sits on. Recomputed every frame rather than stored:
+    /// every widget in this window can change what it depends on.
+    pub fn active(&self) -> presets::Active {
+        self.library
+            .resolve(self.cfg.preset.as_deref(), &self.cfg.lines, &self.cfg.style)
     }
 }
 
@@ -268,6 +282,91 @@ impl eframe::App for SettingsApp {
 }
 
 impl SettingsApp {
+    /// The preset picker: what the current look is called, and the four things you can do to
+    /// it. Global-only -- a monitor override is a partial change on top of the global look,
+    /// which is not a thing a whole-look snapshot can express. (A monitor starts from the
+    /// current look anyway: `overrides::enable_style_override` copies it in.)
+    fn ui_preset_bar(&mut self, ui: &mut egui::Ui) {
+        let active = self.active();
+        let label = match active {
+            presets::Active::Clean(i) => self.library.all()[i].name.clone(),
+            presets::Active::Modified(i) => format!("{} *", self.library.all()[i].name),
+            presets::Active::Custom => "Custom".to_string(),
+        };
+        let base = match active {
+            presets::Active::Clean(i) | presets::Active::Modified(i) => Some(i),
+            presets::Active::Custom => None,
+        };
+        let modified = matches!(active, presets::Active::Modified(_));
+
+        let mut picked: Option<usize> = None;
+        ui.horizontal(|ui| {
+            ui.label("Preset:");
+            egui::ComboBox::from_id_salt("dc_preset_combo")
+                .width(180.0)
+                .selected_text(label.as_str())
+                .show_ui(ui, |ui| {
+                    ui.label("Built-in");
+                    for (i, p) in self.library.all().iter().enumerate() {
+                        if i == presets::BUILTIN_COUNT {
+                            ui.separator();
+                            ui.label("Saved");
+                        }
+                        if ui
+                            .selectable_label(base == Some(i), p.name.as_str())
+                            .clicked()
+                        {
+                            picked = Some(i);
+                        }
+                    }
+                });
+
+            if ui
+                .add_enabled(modified, egui::Button::new("Reset"))
+                .on_hover_text("Throw away the changes and go back to the preset")
+                .clicked()
+            {
+                if let Some(i) = base {
+                    self.library.apply(i, &mut self.cfg);
+                    self.mark_dirty();
+                }
+            }
+
+            let deletable = base.is_some_and(|i| !self.library.is_builtin(i));
+            if ui
+                .add_enabled(deletable, egui::Button::new("Delete"))
+                .on_hover_text("Remove this preset. The lines and style on screen stay as they are")
+                .clicked()
+            {
+                if let Some(i) = base {
+                    // The look stays; only the label goes. Deleting a preset must not change
+                    // what is on the wallpaper.
+                    if self.library.delete(i) {
+                        self.cfg.preset = None;
+                        self.persist_presets();
+                        self.mark_dirty();
+                    }
+                }
+            }
+        });
+
+        // No guard yet -- Task 6 adds the discard prompt that holds this back when the current
+        // preset has unsaved edits on it.
+        if let Some(i) = picked {
+            self.library.apply(i, &mut self.cfg);
+            self.mark_dirty();
+        }
+    }
+
+    /// Writes the user's presets to `presets.toml`. Failure is shown in the error banner and
+    /// otherwise ignored: the library in memory is still right, and nothing on the wallpaper
+    /// depends on this file.
+    fn persist_presets(&mut self) {
+        if let Err(e) = presets_io::save(&self.presets_path, self.library.user()) {
+            self.error = Some(format!("Could not save presets: {e}"));
+        }
+    }
+
     fn ui_target_selector(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.label("Editing:");
@@ -458,6 +557,8 @@ impl SettingsApp {
         ui.separator();
 
         ui.heading("Lines");
+        self.ui_preset_bar(ui);
+        ui.add_space(4.0);
         // Lent out and put back: `lines_editor` needs `&mut Vec<Line>` while `self` is still
         // borrowed by `ui`'s closure-free call chain here.
         let mut list = std::mem::take(&mut self.cfg.lines);
@@ -1000,6 +1101,8 @@ mod tests {
             dirty: false,
             last_write_ms: 0,
             cfg_path: path,
+            presets_path: PathBuf::from("presets.toml"),
+            library: crate::settings::presets::Library::new(Vec::new()),
             error: None,
             font_registry: FontRegistry::default(),
             font_search: String::new(),
@@ -1119,5 +1222,44 @@ mod tests {
             path.exists(),
             "flush must write even if the throttle interval has not elapsed"
         );
+    }
+}
+
+#[cfg(test)]
+mod preset_bar_tests {
+    use super::*;
+    use crate::settings::presets;
+
+    fn app(cfg: Config) -> SettingsApp {
+        SettingsApp {
+            cfg,
+            target: Target::Global,
+            monitors: Vec::new(),
+            fonts: Vec::new(),
+            dirty: false,
+            last_write_ms: 0,
+            cfg_path: PathBuf::from("config.toml"),
+            presets_path: PathBuf::from("presets.toml"),
+            library: presets::Library::new(Vec::new()),
+            error: None,
+            font_registry: FontRegistry::default(),
+            font_search: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_fresh_config_is_clean_on_its_own_preset() {
+        let a = app(Config::default());
+        let i = a.library.find("Clock only").expect("Clock only");
+        assert_eq!(a.active(), presets::Active::Clean(i));
+    }
+
+    #[test]
+    fn a_style_edit_makes_the_active_preset_modified() {
+        let mut cfg = Config::default();
+        cfg.style.size_px = 123.0;
+        let a = app(cfg);
+        let i = a.library.find("Clock only").expect("Clock only");
+        assert_eq!(a.active(), presets::Active::Modified(i));
     }
 }
