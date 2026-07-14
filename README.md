@@ -136,8 +136,13 @@ Picking a preset applies it straight away. Editing on top of it does not touch t
 picker just marks the look as changed (`Clock only *`), and `Reset` puts it back. `Save as…`
 stores the current lines and style under a name of your own, so switching presets never costs
 you a look you cared to keep; a preset you saved can be deleted again, which drops the name and
-leaves the wallpaper as it is. Your own presets live in `presets.toml`, next to `config.toml` —
-the renderer does not watch that file, so saving one does not make the countdown redraw.
+leaves the wallpaper as it is.
+
+Your own presets live in `presets.toml`, next to `config.toml`. The renderer never reads that
+file: the preset library stays out of the config the countdown is drawn from, however long it
+grows. You can write presets into it by hand. One that names a value the renderer would refuse,
+or that takes a name already spoken for, is left out of the picker — but it is left in the file,
+not deleted, so a preset you wrote is never lost to a preset you save.
 
 `config.toml` also carries a `preset` key naming which preset is active. That is bookkeeping for
 the settings window only — the renderer ignores it and draws from `[style]` and `[[line]]`
