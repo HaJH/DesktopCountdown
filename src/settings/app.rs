@@ -49,12 +49,26 @@ pub struct SettingsApp {
     pub(crate) presets_path: PathBuf,
     /// The built-ins plus the user's own, in picker order.
     pub(crate) library: presets::Library,
+    /// A preset the user picked while the current one had unsaved edits on it. Held back
+    /// until the discard prompt is answered; applying it straight away is exactly what would
+    /// throw those edits out without asking.
+    pub(crate) pending_preset: Option<usize>,
+    /// The open Save-as box, if any.
+    pub(crate) save_as: Option<SaveAs>,
     pub(crate) error: Option<String>,
     /// Tracks which font families are safe to render via `FontFamily::Name` (see
     /// `FontRegistry`).
     pub(crate) font_registry: FontRegistry,
     /// Filter text for the font picker's searchable list.
     pub(crate) font_search: String,
+}
+
+/// The Save-as box's state. `then_apply` is set when the box was opened from the discard
+/// prompt: once the look is safely named, the preset the user had picked is applied.
+#[derive(Debug, Default)]
+pub(crate) struct SaveAs {
+    pub name: String,
+    pub then_apply: Option<usize>,
 }
 
 /// Tracks, across frames, which font families are registered with egui for the font
@@ -149,6 +163,8 @@ impl SettingsApp {
             cfg_path,
             presets_path,
             library,
+            pending_preset: None,
+            save_as: None,
             error: None,
             font_registry: FontRegistry::default(),
             font_search: String::new(),
@@ -332,6 +348,15 @@ impl SettingsApp {
                 }
             }
 
+            if ui
+                .button("Save as\u{2026}")
+                .on_hover_text("Store the current lines and style as a preset of your own")
+                .clicked()
+            {
+                self.save_as = Some(SaveAs::default());
+                self.pending_preset = None;
+            }
+
             let deletable = base.is_some_and(|i| !self.library.is_builtin(i));
             if ui
                 .add_enabled(deletable, egui::Button::new("Delete"))
@@ -350,11 +375,123 @@ impl SettingsApp {
             }
         });
 
-        // No guard yet -- Task 6 adds the discard prompt that holds this back when the current
-        // preset has unsaved edits on it.
         if let Some(i) = picked {
-            self.library.apply(i, &mut self.cfg);
-            self.mark_dirty();
+            if modified {
+                self.pending_preset = Some(i);
+            } else {
+                self.library.apply(i, &mut self.cfg);
+                self.mark_dirty();
+            }
+        }
+
+        self.ui_discard_prompt(ui);
+        self.ui_save_as(ui);
+    }
+
+    /// Shown when a preset was picked while the current one had unsaved edits. Inline, not a
+    /// modal: the window saves as you type and there is no undo stack to fall back on, so the
+    /// one place a confirmation earns its keep is the one click that throws work away.
+    fn ui_discard_prompt(&mut self, ui: &mut egui::Ui) {
+        let Some(pending) = self.pending_preset else {
+            return;
+        };
+        let from = match self.active() {
+            presets::Active::Clean(i) | presets::Active::Modified(i) => {
+                self.library.all()[i].name.clone()
+            }
+            // The edits stopped being edits while the prompt was up (the user undid them by
+            // hand). Nothing to discard -- apply and move on.
+            presets::Active::Custom => {
+                self.library.apply(pending, &mut self.cfg);
+                self.pending_preset = None;
+                self.mark_dirty();
+                return;
+            }
+        };
+
+        ui.horizontal(|ui| {
+            ui.colored_label(
+                egui::Color32::from_rgb(200, 140, 40),
+                format!("\u{26a0} Discard changes to \"{from}\"?"),
+            );
+            if ui.button("Discard").clicked() {
+                self.library.apply(pending, &mut self.cfg);
+                self.pending_preset = None;
+                self.mark_dirty();
+            }
+            if ui.button("Save as\u{2026}").clicked() {
+                self.save_as = Some(SaveAs {
+                    name: String::new(),
+                    then_apply: Some(pending),
+                });
+                self.pending_preset = None;
+            }
+            if ui.button("Cancel").clicked() {
+                self.pending_preset = None;
+            }
+        });
+    }
+
+    /// The name box. Saving stores the current lines and style, moves the label onto the new
+    /// preset, and -- when the box was opened from the discard prompt -- applies the preset
+    /// the user had picked.
+    fn ui_save_as(&mut self, ui: &mut egui::Ui) {
+        let Some(mut state) = self.save_as.take() else {
+            return;
+        };
+        let status = self.library.check_name(&state.name);
+        let mut keep_open = true;
+
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut state.name)
+                    .desired_width(180.0)
+                    .hint_text("Preset name"),
+            );
+
+            let save_label = match status {
+                presets::NameStatus::Overwrite => "Overwrite",
+                _ => "Save",
+            };
+            let savable = matches!(
+                status,
+                presets::NameStatus::New | presets::NameStatus::Overwrite
+            );
+            if ui
+                .add_enabled(savable, egui::Button::new(save_label))
+                .clicked()
+            {
+                let lines = self.cfg.lines.clone();
+                let style = self.cfg.style.clone();
+                let i = self.library.save_as(&state.name, &lines, &style);
+                self.cfg.preset = Some(self.library.all()[i].name.clone());
+                self.persist_presets();
+                if let Some(next) = state.then_apply {
+                    self.library.apply(next, &mut self.cfg);
+                }
+                self.mark_dirty();
+                keep_open = false;
+            }
+            if ui.button("Cancel").clicked() {
+                keep_open = false;
+            }
+
+            match status {
+                presets::NameStatus::Builtin => {
+                    ui.colored_label(
+                        egui::Color32::from_rgb(220, 50, 50),
+                        "That is a built-in preset's name",
+                    );
+                }
+                presets::NameStatus::Overwrite => {
+                    ui.small("Replaces the preset of that name");
+                }
+                presets::NameStatus::Empty | presets::NameStatus::New => {}
+            }
+        });
+
+        if keep_open {
+            self.save_as = Some(state);
         }
     }
 
@@ -1103,6 +1240,8 @@ mod tests {
             cfg_path: path,
             presets_path: PathBuf::from("presets.toml"),
             library: crate::settings::presets::Library::new(Vec::new()),
+            pending_preset: None,
+            save_as: None,
             error: None,
             font_registry: FontRegistry::default(),
             font_search: String::new(),
@@ -1241,6 +1380,8 @@ mod preset_bar_tests {
             cfg_path: PathBuf::from("config.toml"),
             presets_path: PathBuf::from("presets.toml"),
             library: presets::Library::new(Vec::new()),
+            pending_preset: None,
+            save_as: None,
             error: None,
             font_registry: FontRegistry::default(),
             font_search: String::new(),
