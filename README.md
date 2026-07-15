@@ -57,14 +57,13 @@ open /Applications/DesktopCountdown.app
 1. Download `DesktopCountdown-macos-universal.zip` from the [latest release](https://github.com/HaJH/DesktopCountdown/releases/latest).
 2. Double-click the zip in Finder to unpack `DesktopCountdown.app`.
 3. Drag `DesktopCountdown.app` into your `Applications` folder.
-4. The first launch is blocked. Open **Terminal**, run the line below, then open the app normally:
-   ```sh
-   xattr -dr com.apple.quarantine /Applications/DesktopCountdown.app
-   ```
-
-The **System Settings → Privacy & Security → Open Anyway** button is another way in, but for an
-ad-hoc-signed app it often doesn't appear — so the `xattr` line is the dependable route. If you
-would rather not trust the binary at all, build it from source below.
+4. The first launch is blocked — clear it either way, then open the app normally:
+   - **Terminal** — run:
+     ```sh
+     xattr -dr com.apple.quarantine /Applications/DesktopCountdown.app
+     ```
+   - **System Settings → Privacy & Security** — scroll down and click **Open Anyway**. For an
+     ad-hoc-signed app this button often doesn't appear; if it is missing, use the Terminal command.
 
 ### From source
 
