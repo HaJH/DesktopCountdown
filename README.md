@@ -36,15 +36,35 @@ with Windows. There is nothing to install and no console window; look for the tr
 
 ### macOS 11+
 
-Grab `DesktopCountdown-macos-universal.zip` (universal binary: Apple silicon and Intel), unzip
-it, and move `DesktopCountdown.app` to `/Applications`. The app lives in the menu bar.
+The app is a universal binary (Apple silicon and Intel) and lives in the menu bar. It is
+ad-hoc signed but **not notarized** (notarization needs a paid Apple Developer account), so
+macOS blocks the first launch — on macOS 15 and later as **"…is damaged and can't be opened"**
+with only a *Move to Trash* button. It is **not damaged**; that is just how Gatekeeper reports
+an app it can't tie to a registered developer. Clearing the quarantine flag once gets past it.
 
-The app is not notarized, so macOS blocks the first launch. Allow it under **System Settings →
-Privacy & Security → Open Anyway**, or clear the quarantine flag instead:
+**Paste this into Terminal** — it downloads the latest release, unpacks it into `Applications`,
+clears the flag, and launches the app:
 
 ```sh
+curl -L https://github.com/HaJH/DesktopCountdown/releases/latest/download/DesktopCountdown-macos-universal.zip -o /tmp/dc.zip
+ditto -x -k /tmp/dc.zip /Applications
 xattr -dr com.apple.quarantine /Applications/DesktopCountdown.app
+open /Applications/DesktopCountdown.app
 ```
+
+**Prefer to do it by hand:**
+
+1. Download `DesktopCountdown-macos-universal.zip` from the [latest release](https://github.com/HaJH/DesktopCountdown/releases/latest).
+2. Double-click the zip in Finder to unpack `DesktopCountdown.app`.
+3. Drag `DesktopCountdown.app` into your `Applications` folder.
+4. The first launch is blocked. Open **Terminal**, run the line below, then open the app normally:
+   ```sh
+   xattr -dr com.apple.quarantine /Applications/DesktopCountdown.app
+   ```
+
+The **System Settings → Privacy & Security → Open Anyway** button is another way in, but for an
+ad-hoc-signed app it often doesn't appear — so the `xattr` line is the dependable route. If you
+would rather not trust the binary at all, build it from source below.
 
 ### From source
 
